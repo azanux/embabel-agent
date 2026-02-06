@@ -44,7 +44,9 @@ public class EmbabelObservationContext extends Observation.Context {
         /** Agent lifecycle event. */
         LIFECYCLE,
         /** LLM call event. */
-        LLM_CALL
+        LLM_CALL,
+        /** Tool loop execution event. */
+        TOOL_LOOP
     }
 
     private final boolean root;
@@ -168,6 +170,17 @@ public class EmbabelObservationContext extends Observation.Context {
      */
     public static EmbabelObservationContext llmCall(String runId, String llmName) {
         return new EmbabelObservationContext(false, runId, llmName, EventType.LLM_CALL, null);
+    }
+
+    /**
+     * Creates context for a tool loop execution.
+     *
+     * @param runId        unique run identifier
+     * @param toolLoopName name of the tool loop
+     * @return the observation context
+     */
+    public static EmbabelObservationContext toolLoop(String runId, String toolLoopName) {
+        return new EmbabelObservationContext(false, runId, toolLoopName, EventType.TOOL_LOOP, null);
     }
 
     /**

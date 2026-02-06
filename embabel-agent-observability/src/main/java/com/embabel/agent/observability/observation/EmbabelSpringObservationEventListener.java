@@ -139,6 +139,12 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             case ObjectBoundEvent e -> {
                 if (properties.isTraceObjectBinding()) onObjectBound(e);
             }
+            case ToolLoopStartEvent e -> {
+                if (properties.isTraceToolLoop()) onToolLoopStart(e);
+            }
+            case ToolLoopCompletedEvent e -> {
+                if (properties.isTraceToolLoop()) onToolLoopCompleted(e);
+            }
             case LlmRequestEvent<?> e -> {
                 if (properties.isTraceLlmCalls()) onLlmRequest(e);
             }
@@ -834,6 +840,68 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.end();
 
         log.debug("Recorded object bound: {} as {} (runId: {})", objectType, name, runId);
+    }
+
+    // ==================== Tool Loop ====================
+
+    /**
+     * Starts a span for tool loop execution, parented under the Action span (or Agent if no action).
+     * Makes the span current so the Micrometer observation and Spring AI calls become children.
+     */
+    private void onToolLoopStart(ToolLoopStartEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        var runId = process.getId();
+        var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
+        var interactionId = event.getInteractionId();
+
+        // Find parent: prefer action span, fallback to agent span
+        var actionKey = "action:" + runId + ":" + actionName;
+        SpanContext parentCtx = activeSpans.get(actionKey);
+        if (parentCtx == null) {
+            parentCtx = activeSpans.get("agent:" + runId);
+        }
+
+        Span span;
+        if (parentCtx != null) {
+            span = tracer.nextSpan(parentCtx.span).name("tool-loop:" + interactionId);
+        } else {
+            span = tracer.nextSpan().name("tool-loop:" + interactionId);
+        }
+
+        span.tag("gen_ai.operation.name", "tool_loop");
+        span.tag("embabel.event.type", "tool_loop");
+        span.tag("embabel.tool_loop.interaction_id", interactionId);
+        span.tag("embabel.tool_loop.max_iterations", String.valueOf(event.getMaxIterations()));
+        span.tag("embabel.tool_loop.output_class", event.getOutputClass().getSimpleName());
+        span.tag("embabel.tool_loop.tools", String.join(", ", event.getToolNames()));
+
+        // CRITICAL: Start span and put in scope so Micrometer observation becomes child
+        span.start();
+        Tracer.SpanInScope scope = tracer.withSpan(span);
+        activeSpans.put("tool-loop:" + runId + ":" + interactionId, new SpanContext(span, scope));
+
+        log.debug("Started span for tool loop: {} (runId: {})", interactionId, runId);
+    }
+
+    /**
+     * Completes the tool loop span with iteration count and replan status.
+     */
+    private void onToolLoopCompleted(ToolLoopCompletedEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        var runId = process.getId();
+        var interactionId = event.getInteractionId();
+        var key = "tool-loop:" + runId + ":" + interactionId;
+
+        SpanContext ctx = activeSpans.remove(key);
+
+        if (ctx != null) {
+            ctx.span.tag("embabel.tool_loop.total_iterations", String.valueOf(event.getTotalIterations()));
+            ctx.span.tag("embabel.tool_loop.replan_requested", String.valueOf(event.getReplanRequested()));
+            ctx.span.tag("embabel.tool_loop.duration_ms", String.valueOf(event.getRunningTime().toMillis()));
+            ctx.scope.close();
+            ctx.span.end();
+            log.debug("Completed span for tool loop: {} (runId: {})", interactionId, runId);
+        }
     }
 
     // ==================== LLM Calls ====================

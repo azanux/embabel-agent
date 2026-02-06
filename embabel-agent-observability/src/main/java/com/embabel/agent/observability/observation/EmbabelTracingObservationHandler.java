@@ -42,6 +42,8 @@ public class EmbabelTracingObservationHandler
 
     private final Map<String, Span> activeAgentSpans = new ConcurrentHashMap<>();
     private final Map<String, Span> activeActionSpans = new ConcurrentHashMap<>();
+    private final Map<String, Span> activeLlmSpans = new ConcurrentHashMap<>();
+    private final Map<String, Span> activeToolLoopSpans = new ConcurrentHashMap<>();
     private final Map<Integer, Tracer.SpanInScope> activeScopes = new ConcurrentHashMap<>();
 
     /**
@@ -198,6 +200,20 @@ public class EmbabelTracingObservationHandler
                 }
                 return null;
 
+            case LLM_CALL:
+                Span llmActionSpan = activeActionSpans.get(runId);
+                if (llmActionSpan != null) {
+                    return llmActionSpan;
+                }
+                return activeAgentSpans.get(runId);
+
+            case TOOL_LOOP:
+                Span toolLoopActionSpan = activeActionSpans.get(runId);
+                if (toolLoopActionSpan != null) {
+                    return toolLoopActionSpan;
+                }
+                return activeAgentSpans.get(runId);
+
             case TOOL_CALL:
                 // For tool calls, prefer current tracer span (could be Spring AI ChatClient)
                 // This ensures tools are nested under LLM calls
@@ -241,6 +257,12 @@ public class EmbabelTracingObservationHandler
             case ACTION:
                 activeActionSpans.put(context.getRunId(), span);
                 break;
+            case LLM_CALL:
+                activeLlmSpans.put(context.getRunId(), span);
+                break;
+            case TOOL_LOOP:
+                activeToolLoopSpans.put(context.getRunId(), span);
+                break;
             default:
                 break;
         }
@@ -258,6 +280,12 @@ public class EmbabelTracingObservationHandler
                 break;
             case ACTION:
                 activeActionSpans.remove(context.getRunId());
+                break;
+            case LLM_CALL:
+                activeLlmSpans.remove(context.getRunId());
+                break;
+            case TOOL_LOOP:
+                activeToolLoopSpans.remove(context.getRunId());
                 break;
             default:
                 break;

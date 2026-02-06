@@ -67,6 +67,9 @@ public class ObservabilityProperties {
     /** Trace tool calls. */
     private boolean traceToolCalls = true;
 
+    /** Trace tool loop execution. */
+    private boolean traceToolLoop = true;
+
     /** Trace LLM calls. */
     private boolean traceLlmCalls = true;
 
@@ -210,6 +213,22 @@ public class ObservabilityProperties {
      */
     public void setTraceToolCalls(boolean traceToolCalls) {
         this.traceToolCalls = traceToolCalls;
+    }
+
+    /**
+     * Returns whether tool loop tracing is enabled.
+     * @return true if tool loops are traced
+     */
+    public boolean isTraceToolLoop() {
+        return traceToolLoop;
+    }
+
+    /**
+     * Sets whether to trace tool loops.
+     * @param traceToolLoop true to trace tool loops
+     */
+    public void setTraceToolLoop(boolean traceToolLoop) {
+        this.traceToolLoop = traceToolLoop;
     }
 
     /**
