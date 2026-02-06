@@ -170,6 +170,14 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         // Create observation
         Observation observation = Observation.createNotStarted(agentName, () -> context, observationRegistry);
 
+        // For subagents, set parent observation from parent agent
+        if (isSubagent) {
+            ObservationContext parentCtx = activeObservations.get("agent:" + parentId);
+            if (parentCtx != null) {
+                observation.parentObservation(parentCtx.observation);
+            }
+        }
+
         // OpenTelemetry GenAI semantic conventions
         observation.lowCardinalityKeyValue("gen_ai.operation.name", "agent");
         observation.highCardinalityKeyValue("gen_ai.conversation.id", runId);

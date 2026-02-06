@@ -82,9 +82,19 @@ public class EmbabelTracingObservationHandler
         Span span;
 
         if (context.isRoot()) {
-            // Create root span (new trace)
-            span = createRootSpan(context.getName());
-            log.debug("Created root span for agent: {} (runId: {})", context.getName(), context.getRunId());
+            // Check if there's an active span (e.g., from HTTP request or parent agent)
+            Span currentSpan = tracer.currentSpan();
+            if (currentSpan != null) {
+                // Attach agent to existing trace (HTTP request, parent agent, etc.)
+                span = tracer.nextSpan(currentSpan).name(context.getName());
+                span.start();
+                log.debug("Created agent span as child of existing trace for: {} (runId: {})",
+                        context.getName(), context.getRunId());
+            } else {
+                // No active trace - create root span (new trace)
+                span = createRootSpan(context.getName());
+                log.debug("Created root span for agent: {} (runId: {})", context.getName(), context.getRunId());
+            }
         } else {
             // Child span with parent resolution
             Span parentSpan = resolveParentSpan(context);

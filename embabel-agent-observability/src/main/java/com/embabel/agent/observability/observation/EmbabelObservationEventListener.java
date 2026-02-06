@@ -249,8 +249,15 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
                 parentContext = Context.root();
             }
         } else {
-            // Root agent: always start a new independent trace
-            parentContext = Context.root();
+            // Root agent: attach to existing trace (HTTP request, etc.) if present
+            io.opentelemetry.api.trace.Span currentSpan = io.opentelemetry.api.trace.Span.fromContext(Context.current());
+            if (currentSpan.getSpanContext().isValid()) {
+                parentContext = Context.current();
+                log.debug("Root agent '{}' attaching to existing trace (e.g., HTTP request)", agentName);
+            } else {
+                parentContext = Context.root();
+                log.debug("Root agent '{}' starting new independent trace", agentName);
+            }
         }
 
         Span span = tracer.spanBuilder(agentName)

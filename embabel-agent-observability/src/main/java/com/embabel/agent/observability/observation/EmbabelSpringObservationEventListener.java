@@ -223,9 +223,15 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             // Subagent without known parent - use current context as parent
             span = tracer.nextSpan().name(agentName);
         } else {
-            // Root agent - create a NEW trace by temporarily clearing the context
-            // This ensures each user request gets its own trace ID
-            span = createRootSpan(agentName);
+            // Root agent - attach to existing trace (HTTP request, etc.) if present
+            Span currentSpan = tracer.currentSpan();
+            if (currentSpan != null) {
+                span = tracer.nextSpan(currentSpan).name(agentName);
+                log.debug("Root agent '{}' attaching to existing trace (e.g., HTTP request)", agentName);
+            } else {
+                span = createRootSpan(agentName);
+                log.debug("Root agent '{}' starting new independent trace", agentName);
+            }
         }
 
         span.tag("gen_ai.operation.name", "agent");

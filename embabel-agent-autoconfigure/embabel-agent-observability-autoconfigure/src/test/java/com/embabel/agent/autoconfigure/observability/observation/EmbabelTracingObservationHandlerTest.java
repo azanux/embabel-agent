@@ -427,13 +427,13 @@ class EmbabelTracingObservationHandlerTest {
     }
 
     @Test
-    @DisplayName("Context.root() should create isolated trace even with active span")
-    void contextRoot_shouldCreateIsolatedTrace_evenWithActiveSpan() {
-        // Create a background span that should normally be the parent
+    @DisplayName("Root agent should attach to existing active span (e.g., HTTP request)")
+    void rootAgent_shouldAttachToActiveSpan() {
+        // Create a background span simulating an HTTP request
         Span backgroundSpan = tracer.nextSpan().name("background").start();
         try (Tracer.SpanInScope bgScope = tracer.withSpan(backgroundSpan)) {
 
-            // Create an agent observation - should still be root (no parent)
+            // Create an agent observation - should become child of active span
             EmbabelObservationContext agentContext = EmbabelObservationContext.rootAgent("run-1", "TestAgent");
             Observation agentObservation = Observation.createNotStarted("TestAgent", () -> agentContext, observationRegistry);
             agentObservation.start();
@@ -466,15 +466,15 @@ class EmbabelTracingObservationHandlerTest {
                 .findFirst()
                 .orElseThrow();
 
-        // Agent should NOT be child of background (thanks to Context.root())
+        // Agent should be child of background span (attached to existing trace)
         assertThat(agentSpan.getParentSpanId())
-                .as("Agent should have no parent despite active background span")
-                .isEqualTo(io.opentelemetry.api.trace.SpanId.getInvalid());
+                .as("Agent should be child of active background span")
+                .isEqualTo(bgSpan.getSpanId());
 
-        // Agent and background should have different trace IDs
+        // Agent and background should share the same trace ID
         assertThat(agentSpan.getTraceId())
-                .as("Agent should have different trace ID than background")
-                .isNotEqualTo(bgSpan.getTraceId());
+                .as("Agent should share trace ID with background")
+                .isEqualTo(bgSpan.getTraceId());
 
         // Action should still be child of agent
         assertThat(actionSpan.getParentSpanId())
