@@ -42,7 +42,9 @@ public class EmbabelObservationContext extends Observation.Context {
         /** State transition event. */
         STATE_TRANSITION,
         /** Agent lifecycle event. */
-        LIFECYCLE
+        LIFECYCLE,
+        /** LLM call event. */
+        LLM_CALL
     }
 
     private final boolean root;
@@ -155,6 +157,17 @@ public class EmbabelObservationContext extends Observation.Context {
      */
     public static EmbabelObservationContext lifecycle(String runId, String lifecycleState) {
         return new EmbabelObservationContext(false, runId, lifecycleState, EventType.LIFECYCLE, null);
+    }
+
+    /**
+     * Creates context for an LLM call.
+     *
+     * @param runId   unique run identifier
+     * @param llmName name of the LLM model
+     * @return the observation context
+     */
+    public static EmbabelObservationContext llmCall(String runId, String llmName) {
+        return new EmbabelObservationContext(false, runId, llmName, EventType.LLM_CALL, null);
     }
 
     /**

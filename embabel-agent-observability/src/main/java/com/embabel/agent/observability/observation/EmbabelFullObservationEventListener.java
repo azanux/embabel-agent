@@ -101,6 +101,12 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             case AgentProcessStuckEvent e -> {
                 if (properties.isTraceLifecycleStates()) onLifecycleState(e, "STUCK");
             }
+            case LlmRequestEvent<?> e -> {
+                if (properties.isTraceLlmCalls()) onLlmRequest(e);
+            }
+            case LlmResponseEvent<?> e -> {
+                if (properties.isTraceLlmCalls()) onLlmResponse(e);
+            }
             default -> {}
         }
     }
@@ -653,6 +659,74 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.stop();
 
         log.debug("Recorded lifecycle state: {} (runId: {})", state, runId);
+    }
+
+    // --- LLM Calls ---
+
+    /**
+     * Starts an observation for an LLM call, parented under the Action observation (or Agent if no action).
+     * By opening a scope, the subsequent tool-loop and Spring AI ChatModel observations
+     * become children of this LLM observation instead of the Action.
+     */
+    private void onLlmRequest(LlmRequestEvent<?> event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
+        String modelName = event.getLlmMetadata().getName();
+
+        // Find parent: prefer action observation, fallback to agent observation
+        String actionKey = "action:" + runId + ":" + actionName;
+        ObservationContext parentCtx = activeObservations.get(actionKey);
+        if (parentCtx == null) {
+            parentCtx = activeObservations.get("agent:" + runId);
+        }
+
+        EmbabelObservationContext context = EmbabelObservationContext.llmCall(runId, "llm:" + modelName);
+
+        Observation observation = Observation.createNotStarted("llm:" + modelName, () -> context, observationRegistry);
+
+        if (parentCtx != null) {
+            observation.parentObservation(parentCtx.observation);
+        }
+
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "chat");
+        observation.lowCardinalityKeyValue("gen_ai.request.model", modelName);
+        observation.lowCardinalityKeyValue("embabel.event.type", "llm_call");
+        observation.highCardinalityKeyValue("embabel.llm.output_class", event.getOutputClass().getSimpleName());
+        observation.highCardinalityKeyValue("embabel.llm.interaction_id", event.getInteraction().getId());
+
+        observation.start();
+        Observation.Scope scope = observation.openScope();
+
+        activeObservations.put("llm:" + runId + ":" + actionName, new ObservationContext(observation, scope));
+        log.debug("Started LLM observation: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
+    }
+
+    /**
+     * Completes the LLM observation with response metadata.
+     */
+    private void onLlmResponse(LlmResponseEvent<?> event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String actionName = event.getRequest().getAction() != null
+                ? event.getRequest().getAction().getName() : "__no_action__";
+        String key = "llm:" + runId + ":" + actionName;
+
+        ObservationContext ctx = activeObservations.remove(key);
+
+        if (ctx != null) {
+            ctx.observation.highCardinalityKeyValue("embabel.llm.duration_ms",
+                    String.valueOf(event.getRunningTime().toMillis()));
+            if (event.getResponse() != null) {
+                ctx.observation.highCardinalityKeyValue("embabel.llm.output_type",
+                        event.getResponse().getClass().getSimpleName());
+            }
+
+            ctx.scope.close();
+            ctx.observation.stop();
+
+            log.debug("Completed LLM observation (runId: {}, action: {})", runId, actionName);
+        }
     }
 
     // --- Utility Methods ---

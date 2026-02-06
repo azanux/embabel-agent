@@ -18,7 +18,9 @@ package com.embabel.agent.observability.observation;
 import com.embabel.agent.api.common.PlannerType;
 import com.embabel.agent.api.event.*;
 import com.embabel.agent.core.*;
+import com.embabel.agent.core.support.LlmInteraction;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.common.ai.model.LlmMetadata;
 import com.embabel.plan.Plan;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.common.AttributeKey;
@@ -668,6 +670,182 @@ class EmbabelObservationEventListenerTest {
     }
 
     // ================================================================================
+    // LLM CALL TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("LLM Call Tests")
+    class LlmCallTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+        private ObservabilityProperties properties;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            properties = new ObservabilityProperties();
+            properties.setTraceLlmCalls(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("LLM span should be child of Action span")
+        void llmSpan_shouldBeChildOfActionSpan() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(3); // agent + action + llm
+
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(actionSpan).isNotNull();
+            assertThat(llmSpan).isNotNull();
+
+            // LLM should be child of action
+            assertThat(llmSpan.getParentSpanId()).isEqualTo(actionSpan.getSpanId());
+            assertThat(llmSpan.getTraceId()).isEqualTo(actionSpan.getTraceId());
+        }
+
+        @Test
+        @DisplayName("LLM span should have correct GenAI attributes")
+        void llmSpan_shouldHaveCorrectAttributes() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")))
+                    .isEqualTo("chat");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.request.model")))
+                    .isEqualTo("gpt-4");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.output_class")))
+                    .isEqualTo("String");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.interaction_id")))
+                    .isEqualTo("test-interaction");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.event.type")))
+                    .isEqualTo("llm_call");
+        }
+
+        @Test
+        @DisplayName("LLM span should have duration and output_type on response")
+        void llmSpan_shouldHaveResponseAttributes() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            assertThat(llmSpan.getAttributes().get(AttributeKey.longKey("embabel.llm.duration_ms")))
+                    .isEqualTo(150L);
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.output_type")))
+                    .isEqualTo("String");
+        }
+
+        @Test
+        @DisplayName("LLM span should NOT be created when traceLlmCalls is false")
+        void llmSpan_shouldNotBeCreated_whenDisabled() {
+            properties.setTraceLlmCalls(false);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(2); // agent + action only
+
+            assertThat(findSpanByName(spans, "llm:gpt-4")).isNull();
+        }
+
+        @Test
+        @DisplayName("LLM span should fall back to Agent span when no action")
+        void llmSpan_shouldFallbackToAgentSpan_whenNoAction() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, null, "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(2); // agent + llm
+
+            SpanData agentSpan = findSpanByName(spans, "TestAgent");
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            // LLM should be child of agent when no action
+            assertThat(llmSpan.getParentSpanId()).isEqualTo(agentSpan.getSpanId());
+        }
+    }
+
+    // ================================================================================
     // FULL HIERARCHY TEST
     // ================================================================================
 
@@ -909,6 +1087,46 @@ class EmbabelObservationEventListenerTest {
         when(plan.getActions()).thenReturn(Collections.emptyList());
         when(event.getPlan()).thenReturn(plan);
 
+        return event;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
+        LlmRequestEvent<O> event = mock(LlmRequestEvent.class);
+        lenient().when(event.getAgentProcess()).thenReturn(process);
+
+        if (actionName != null) {
+            Action action = mock(Action.class);
+            lenient().when(action.getName()).thenReturn(actionName);
+            lenient().when(event.getAction()).thenReturn(action);
+        } else {
+            lenient().when(event.getAction()).thenReturn(null);
+        }
+
+        lenient().when(event.getOutputClass()).thenReturn(outputClass);
+
+        LlmMetadata llmMetadata = mock(LlmMetadata.class);
+        lenient().when(llmMetadata.getName()).thenReturn(modelName);
+        lenient().when(event.getLlmMetadata()).thenReturn(llmMetadata);
+
+        LlmInteraction interaction = mock(LlmInteraction.class);
+        lenient().when(interaction.getId()).thenReturn("test-interaction");
+        lenient().when(event.getInteraction()).thenReturn(interaction);
+
+        return event;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <O> LlmResponseEvent<O> createMockLlmResponseEvent(
+            LlmRequestEvent<?> request, O response) {
+        // Capture agentProcess before stubbing to avoid nested mock calls
+        AgentProcess agentProcess = request.getAgentProcess();
+        LlmResponseEvent<O> event = mock(LlmResponseEvent.class);
+        lenient().when(event.getAgentProcess()).thenReturn(agentProcess);
+        lenient().doReturn(request).when(event).getRequest();
+        lenient().when(event.getResponse()).thenReturn(response);
+        lenient().when(event.getRunningTime()).thenReturn(Duration.ofMillis(150));
         return event;
     }
 

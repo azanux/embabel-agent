@@ -173,6 +173,12 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
             case ObjectBoundEvent e -> {
                 if (properties.isTraceObjectBinding()) onObjectBound(e);
             }
+            case LlmRequestEvent<?> e -> {
+                if (properties.isTraceLlmCalls()) onLlmRequest(e);
+            }
+            case LlmResponseEvent<?> e -> {
+                if (properties.isTraceLlmCalls()) onLlmResponse(e);
+            }
             default -> {}
         }
     }
@@ -830,6 +836,70 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         span.end();
 
         log.debug("Recorded object bound: {} as {} (runId: {})", objectType, name, runId);
+    }
+
+    // ==================== LLM Calls ====================
+
+    /**
+     * Starts a span for an LLM call, parented under the Action span (or Agent if no action).
+     * By making this span current, the subsequent tool-loop and Spring AI ChatModel spans
+     * become children of this LLM span instead of the Action.
+     */
+    private void onLlmRequest(LlmRequestEvent<?> event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
+        String modelName = event.getLlmMetadata().getName();
+
+        // Find parent: prefer action span, fallback to agent span
+        String actionKey = "action:" + runId + ":" + actionName;
+        SpanContext parentCtx = activeSpans.get(actionKey);
+        if (parentCtx == null) {
+            parentCtx = activeSpans.get("agent:" + runId);
+        }
+        Context parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
+
+        Span span = tracer.spanBuilder("llm:" + modelName)
+                .setParent(parentContext)
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("gen_ai.operation.name", "chat")
+                .setAttribute("gen_ai.request.model", modelName)
+                .setAttribute("embabel.llm.output_class", event.getOutputClass().getSimpleName())
+                .setAttribute("embabel.llm.interaction_id", event.getInteraction().getId())
+                .setAttribute("embabel.event.type", "llm_call")
+                .startSpan();
+
+        // CRITICAL: makeCurrent() so tool-loop becomes child of this LLM span
+        Scope scope = span.makeCurrent();
+        activeSpans.put("llm:" + runId + ":" + actionName, new SpanContext(span, scope));
+
+        log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
+    }
+
+    /**
+     * Completes the LLM span with response metadata.
+     */
+    private void onLlmResponse(LlmResponseEvent<?> event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String actionName = event.getRequest().getAction() != null
+                ? event.getRequest().getAction().getName() : "__no_action__";
+        String key = "llm:" + runId + ":" + actionName;
+
+        SpanContext ctx = activeSpans.remove(key);
+
+        if (ctx != null) {
+            ctx.span.setAttribute("embabel.llm.duration_ms", event.getRunningTime().toMillis());
+            if (event.getResponse() != null) {
+                ctx.span.setAttribute("embabel.llm.output_type", event.getResponse().getClass().getSimpleName());
+            }
+
+            ctx.span.setStatus(StatusCode.OK);
+            ctx.scope.close();
+            ctx.span.end();
+
+            log.debug("Completed LLM span (runId: {}, action: {})", runId, actionName);
+        }
     }
 
     // ==================== Utility Methods ====================
