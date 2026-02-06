@@ -21,7 +21,14 @@ import com.embabel.agent.core.AgentProcess;
 import com.embabel.agent.core.Blackboard;
 import com.embabel.agent.core.IoBinding;
 import com.embabel.agent.core.ToolGroupMetadata;
+import com.embabel.agent.event.AgentProcessRagEvent;
+import com.embabel.agent.event.RagEvent;
+import com.embabel.agent.event.RagRequestReceivedEvent;
+import com.embabel.agent.event.RagResponseEvent;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.common.ai.model.LlmOptions;
+import com.embabel.agent.rag.pipeline.event.*;
+import com.embabel.agent.spi.Ranking;
 import com.embabel.plan.Plan;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -112,6 +119,30 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             }
             case LlmResponseEvent<?> e -> {
                 if (properties.isTraceLlmCalls()) onLlmResponse(e);
+            }
+            case AgentProcessRagEvent e -> {
+                if (properties.isTraceRag()) onRagEvent(e);
+            }
+            case ProcessKilledEvent e -> onProcessKilled(e);
+            default -> {}
+        }
+    }
+
+    /** Routes incoming platform events to the appropriate handler methods. */
+    @Override
+    public void onPlatformEvent(@NotNull AgentPlatformEvent event) {
+        switch (event) {
+            case RankingChoiceMadeEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingChoiceMade(e);
+            }
+            case RankingChoiceCouldNotBeMadeEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingChoiceCouldNotBeMade(e);
+            }
+            case RankingChoiceRequestEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingRequest(e);
+            }
+            case DynamicAgentCreationEvent e -> {
+                if (properties.isTraceDynamicAgentCreation()) onDynamicAgentCreation(e);
             }
             default -> {}
         }
@@ -679,12 +710,24 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer action observation, fallback to agent observation
-        var actionKey = "action:" + runId + ":" + actionName;
-        ObservationContext parentCtx = activeObservations.get(actionKey);
-        if (parentCtx == null) {
-            parentCtx = activeObservations.get("agent:" + runId);
+        // Find parent: prefer llm observation, then action observation, fallback to agent observation
+        var llmKey = "llm:" + runId + ":" + actionName;
+        ObservationContext parentCtx = activeObservations.get(llmKey);
+        String resolvedParent;
+        if (parentCtx != null) {
+            resolvedParent = "llm (key=" + llmKey + ")";
+        } else {
+            var actionKey = "action:" + runId + ":" + actionName;
+            parentCtx = activeObservations.get(actionKey);
+            if (parentCtx != null) {
+                resolvedParent = "action (key=" + actionKey + ")";
+            } else {
+                parentCtx = activeObservations.get("agent:" + runId);
+                resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE";
+            }
         }
+        log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
+                resolvedParent, runId, actionName, interactionId, activeObservations.keySet());
 
         EmbabelObservationContext context = EmbabelObservationContext.toolLoop(runId, "tool-loop:" + interactionId);
 
@@ -692,6 +735,8 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
 
         if (parentCtx != null) {
             observation.parentObservation(parentCtx.observation);
+        } else {
+            log.warn("No parent found for tool loop {} (runId: {}). Tool loop will be an independent trace.", interactionId, runId);
         }
 
         observation.lowCardinalityKeyValue("gen_ai.operation.name", "tool_loop");
@@ -766,6 +811,23 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.highCardinalityKeyValue("embabel.llm.output_class", event.getOutputClass().getSimpleName());
         observation.highCardinalityKeyValue("embabel.llm.interaction_id", event.getInteraction().getId());
 
+        // GenAI hyperparameters from LlmOptions
+        LlmOptions llmOptions = event.getInteraction().getLlm();
+        if (llmOptions.getTemperature() != null) {
+            observation.highCardinalityKeyValue("gen_ai.request.temperature", String.valueOf(llmOptions.getTemperature()));
+        }
+        if (llmOptions.getMaxTokens() != null) {
+            observation.highCardinalityKeyValue("gen_ai.request.max_tokens", String.valueOf(llmOptions.getMaxTokens()));
+        }
+        if (llmOptions.getTopP() != null) {
+            observation.highCardinalityKeyValue("gen_ai.request.top_p", String.valueOf(llmOptions.getTopP()));
+        }
+        // Provider from LlmMetadata (low cardinality - few distinct providers)
+        String provider = event.getLlmMetadata().getProvider();
+        if (provider != null && !provider.isEmpty()) {
+            observation.lowCardinalityKeyValue("gen_ai.provider.name", provider);
+        }
+
         observation.start();
         Observation.Scope scope = observation.openScope();
 
@@ -797,6 +859,174 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             ctx.observation.stop();
 
             log.debug("Completed LLM observation (runId: {}, action: {})", runId, actionName);
+        }
+    }
+
+    // --- RAG Events ---
+
+    /**
+     * Creates an instant observation for a RAG event.
+     * Determines observation name and attributes based on the specific RAG event subtype.
+     */
+    private void onRagEvent(AgentProcessRagEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        RagEvent ragEvent = event.getRagEvent();
+
+        // Determine span name based on RAG event type
+        String spanName;
+        if (ragEvent instanceof RagRequestReceivedEvent) {
+            spanName = "rag:request";
+        } else if (ragEvent instanceof RagResponseEvent) {
+            spanName = "rag:response";
+        } else if (ragEvent instanceof EnhancementStartingRagPipelineEvent e) {
+            spanName = "rag:enhancement:" + e.getEnhancerName();
+        } else if (ragEvent instanceof EnhancementCompletedRagPipelineEvent e) {
+            spanName = "rag:enhancement:" + e.getEnhancerName() + ":done";
+        } else if (ragEvent instanceof InitialRequestRagPipelineEvent) {
+            spanName = "rag:pipeline:request";
+        } else if (ragEvent instanceof InitialResponseRagPipelineEvent) {
+            spanName = "rag:pipeline:response";
+        } else {
+            spanName = "rag:event";
+        }
+
+        EmbabelObservationContext context = EmbabelObservationContext.rag(runId, spanName);
+
+        Observation observation = Observation.createNotStarted(spanName, () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "rag");
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "rag");
+        observation.highCardinalityKeyValue("embabel.rag.query", ragEvent.getRequest().getQuery());
+
+        // Add type-specific attributes
+        if (ragEvent instanceof RagRequestReceivedEvent) {
+            observation.highCardinalityKeyValue("input.value", truncate(ragEvent.getRequest().getQuery()));
+        } else if (ragEvent instanceof RagResponseEvent re) {
+            observation.highCardinalityKeyValue("embabel.rag.result_count",
+                    String.valueOf(re.getRagResponse().getResults().size()));
+            observation.highCardinalityKeyValue("output.value",
+                    truncate(re.getRagResponse().getResults().toString()));
+        } else if (ragEvent instanceof EnhancementStartingRagPipelineEvent e) {
+            observation.highCardinalityKeyValue("embabel.rag.enhancer", e.getEnhancerName());
+        } else if (ragEvent instanceof EnhancementCompletedRagPipelineEvent e) {
+            observation.highCardinalityKeyValue("embabel.rag.enhancer", e.getEnhancerName());
+        } else if (ragEvent instanceof RagPipelineEvent pe) {
+            observation.highCardinalityKeyValue("embabel.rag.description", pe.getDescription());
+        }
+
+        // Instant observation
+        observation.start();
+        observation.stop();
+
+        log.debug("Recorded RAG event: {} (runId: {})", spanName, runId);
+    }
+
+    // --- Ranking Events ---
+
+    /** Records an instant observation for a ranking request event. */
+    private void onRankingRequest(RankingChoiceRequestEvent<?> event) {
+        EmbabelObservationContext context = EmbabelObservationContext.ranking("ranking:request");
+
+        Observation observation = Observation.createNotStarted("ranking:request", () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "ranking");
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "ranking");
+        observation.highCardinalityKeyValue("embabel.ranking.type", event.getType().getSimpleName());
+        observation.highCardinalityKeyValue("embabel.ranking.choices_count", String.valueOf(event.getChoices().size()));
+        observation.highCardinalityKeyValue("input.value", truncate(event.getBasis().toString()));
+
+        observation.start();
+        observation.stop();
+
+        log.debug("Recorded ranking request event");
+    }
+
+    /** Records an instant observation for a ranking choice made event. */
+    private void onRankingChoiceMade(RankingChoiceMadeEvent<?> event) {
+        Ranking<?> choice = event.getChoice();
+        String chosenName = choice.getMatch().getName();
+
+        EmbabelObservationContext context = EmbabelObservationContext.ranking("ranking:choice_made");
+
+        Observation observation = Observation.createNotStarted("ranking:choice_made", () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "ranking");
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "ranking");
+        observation.highCardinalityKeyValue("embabel.ranking.chosen", chosenName);
+        observation.highCardinalityKeyValue("embabel.ranking.score", String.valueOf(choice.getScore()));
+        observation.highCardinalityKeyValue("embabel.ranking.type", event.getType().getSimpleName());
+        observation.highCardinalityKeyValue("embabel.ranking.choices_count", String.valueOf(event.getChoices().size()));
+        observation.highCardinalityKeyValue("input.value", truncate(event.getBasis().toString()));
+        observation.highCardinalityKeyValue("output.value", truncate(event.getRankings().infoString(true, 0)));
+
+        observation.start();
+        observation.stop();
+
+        log.debug("Recorded ranking choice made: {}", chosenName);
+    }
+
+    /** Records an instant observation with error for ranking choice that could not be made. */
+    private void onRankingChoiceCouldNotBeMade(RankingChoiceCouldNotBeMadeEvent<?> event) {
+        EmbabelObservationContext context = EmbabelObservationContext.ranking("ranking:no_choice");
+
+        Observation observation = Observation.createNotStarted("ranking:no_choice", () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "ranking");
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "ranking");
+        observation.highCardinalityKeyValue("embabel.ranking.type", event.getType().getSimpleName());
+        observation.highCardinalityKeyValue("embabel.ranking.confidence_cutoff", String.valueOf(event.getConfidenceCutOff()));
+        observation.highCardinalityKeyValue("embabel.ranking.choices_count", String.valueOf(event.getChoices().size()));
+        observation.highCardinalityKeyValue("input.value", truncate(event.getBasis().toString()));
+        observation.highCardinalityKeyValue("output.value", truncate(event.getRankings().infoString(true, 0)));
+
+        observation.start();
+        observation.error(new RuntimeException("No ranking choice could be made"));
+        observation.stop();
+
+        log.debug("Recorded ranking choice could not be made");
+    }
+
+    // --- Dynamic Agent Creation ---
+
+    /** Records an instant observation for dynamic agent creation. */
+    private void onDynamicAgentCreation(DynamicAgentCreationEvent event) {
+        String agentName = event.getAgent().getName();
+
+        EmbabelObservationContext context = EmbabelObservationContext.dynamicAgentCreation("dynamic_agent:" + agentName);
+
+        Observation observation = Observation.createNotStarted("dynamic_agent:" + agentName, () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "dynamic_agent_creation");
+        observation.lowCardinalityKeyValue("gen_ai.operation.name", "create_agent");
+        observation.highCardinalityKeyValue("embabel.agent.name", agentName);
+        observation.highCardinalityKeyValue("input.value", truncate(event.getBasis().toString()));
+
+        observation.start();
+        observation.stop();
+
+        log.debug("Recorded dynamic agent creation: {}", agentName);
+    }
+
+    // --- Process Killed ---
+
+    /** Closes the agent observation with error status when the process is killed. */
+    private void onProcessKilled(ProcessKilledEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String key = "agent:" + runId;
+
+        ObservationContext ctx = activeObservations.remove(key);
+        inputSnapshots.remove(key);
+        planIterations.remove(runId);
+
+        if (ctx != null) {
+            ctx.observation.lowCardinalityKeyValue("embabel.agent.status", "killed");
+            ctx.observation.error(new RuntimeException("Agent process was killed"));
+            ctx.scope.close();
+            ctx.observation.stop();
+
+            log.debug("Recorded process killed for agent runId: {}", runId);
         }
     }
 

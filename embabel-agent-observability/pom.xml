@@ -25,6 +25,11 @@
             <artifactId>embabel-agent-api</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>com.embabel.agent</groupId>
+            <artifactId>embabel-agent-rag-pipeline</artifactId>
+        </dependency>
+
         <!-- Micrometer Tracing API (Tracer, Span, TracingObservationHandler) -->
         <dependency>
             <groupId>io.micrometer</groupId>

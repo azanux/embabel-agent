@@ -15,18 +15,35 @@
  */
 package com.embabel.agent.observability.observation;
 
+import com.embabel.agent.api.common.PlannerType;
+import com.embabel.agent.api.event.*;
+import com.embabel.agent.core.*;
+import com.embabel.agent.event.AgentProcessRagEvent;
+import com.embabel.agent.event.RagRequestReceivedEvent;
+import com.embabel.agent.event.RagResponseEvent;
+import com.embabel.agent.core.support.LlmInteraction;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.agent.rag.service.RagRequest;
+import com.embabel.agent.rag.service.RagResponse;
+import com.embabel.agent.spi.Ranking;
+import com.embabel.agent.spi.Rankings;
+import com.embabel.common.ai.model.LlmMetadata;
+import com.embabel.common.ai.model.LlmOptions;
+import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Collections;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 /**
- * Tests for EmbabelSpringObservationEventListener initialization.
+ * Tests for EmbabelSpringObservationEventListener initialization and RAG events.
  */
 @ExtendWith(MockitoExtension.class)
 class EmbabelSpringObservationEventListenerTest {
@@ -59,5 +76,381 @@ class EmbabelSpringObservationEventListenerTest {
                 new EmbabelSpringObservationEventListener(tracer, properties);
 
         assertThat(listener).isNotNull();
+    }
+
+    // ================================================================================
+    // RAG EVENT TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("RAG Event Tests")
+    class RagEventTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            // Set up chaining: tracer.nextSpan().name() returns mockSpan
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+        }
+
+        @Test
+        @DisplayName("RAG request event should create span with correct name")
+        void ragRequestEvent_shouldCreateSpan_withCorrectName() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("What is the meaning of life?");
+            RagRequestReceivedEvent ragEvent = new RagRequestReceivedEvent(ragRequest, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            // Create agent span first
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            // Fire RAG event
+            listener.onProcessEvent(event);
+
+            // Verify span was created with name "rag:request"
+            verify(mockSpan, atLeastOnce()).name("rag:request");
+            verify(mockSpan, atLeastOnce()).tag("embabel.rag.query", "What is the meaning of life?");
+            verify(mockSpan, atLeastOnce()).tag("embabel.event.type", "rag");
+        }
+
+        @Test
+        @DisplayName("RAG response event should create span with result count")
+        void ragResponseEvent_shouldCreateSpan_withResultCount() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("test query");
+            RagResponse ragResponse = new RagResponse(ragRequest, "test-service", Collections.emptyList(), null, null, java.time.Instant.now());
+            RagResponseEvent ragEvent = new RagResponseEvent(ragResponse, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+
+            verify(mockSpan, atLeastOnce()).name("rag:response");
+            verify(mockSpan, atLeastOnce()).tag("embabel.rag.result_count", "0");
+        }
+
+        @Test
+        @DisplayName("RAG event should NOT create span when traceRag is false")
+        void ragEvent_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceRag(false);
+
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("test query");
+            RagRequestReceivedEvent ragEvent = new RagRequestReceivedEvent(ragRequest, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+
+            // Should never create a span named "rag:request"
+            verify(mockSpan, never()).name("rag:request");
+        }
+    }
+
+    // ================================================================================
+    // LLM CALL TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("LLM Call Tests")
+    class LlmCallTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+
+            properties.setTraceLlmCalls(true);
+        }
+
+        @Test
+        @DisplayName("LLM span should have GenAI hyperparameter attributes")
+        void llmSpan_shouldHaveGenAiHyperparameterAttributes() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            // Create agent span first
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            // Fire LLM request
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            listener.onProcessEvent(llmRequest);
+
+            // Verify hyperparameter tags
+            verify(mockSpan, atLeastOnce()).tag("gen_ai.request.temperature", "0.7");
+            verify(mockSpan, atLeastOnce()).tag("gen_ai.request.max_tokens", "1000");
+            verify(mockSpan, atLeastOnce()).tag("gen_ai.request.top_p", "0.9");
+            verify(mockSpan, atLeastOnce()).tag("gen_ai.provider.name", "openai");
+        }
+    }
+
+    // ================================================================================
+    // RANKING EVENT TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Ranking Event Tests")
+    class RankingEventTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+        }
+
+        @Test
+        @DisplayName("RankingChoiceMadeEvent should create span with correct name")
+        @SuppressWarnings("unchecked")
+        void rankingChoiceMade_shouldCreateSpan() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            RankingChoiceMadeEvent<?> event = createRankingChoiceMadeEvent("TestAgent", 0.95);
+            listener.onPlatformEvent(event);
+
+            verify(mockSpan, atLeastOnce()).name("ranking:choice_made");
+            verify(mockSpan, atLeastOnce()).tag("embabel.event.type", "ranking");
+            verify(mockSpan, atLeastOnce()).tag("embabel.ranking.chosen", "TestAgent");
+        }
+
+        @Test
+        @DisplayName("Ranking event should NOT create span when disabled")
+        @SuppressWarnings("unchecked")
+        void rankingEvent_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceRanking(false);
+
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            RankingChoiceMadeEvent<?> event = createRankingChoiceMadeEvent("TestAgent", 0.95);
+            listener.onPlatformEvent(event);
+
+            verify(mockSpan, never()).name("ranking:choice_made");
+        }
+    }
+
+    // ================================================================================
+    // DYNAMIC AGENT CREATION TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Dynamic Agent Creation Tests")
+    class DynamicAgentCreationTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+        }
+
+        @Test
+        @DisplayName("DynamicAgentCreationEvent should create span")
+        void dynamicAgentCreation_shouldCreateSpan() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            DynamicAgentCreationEvent event = createDynamicAgentCreationEvent("DynamicBot");
+            listener.onPlatformEvent(event);
+
+            verify(mockSpan, atLeastOnce()).name("dynamic_agent:DynamicBot");
+            verify(mockSpan, atLeastOnce()).tag("gen_ai.operation.name", "create_agent");
+            verify(mockSpan, atLeastOnce()).tag("embabel.event.type", "dynamic_agent_creation");
+        }
+
+        @Test
+        @DisplayName("DynamicAgentCreationEvent should NOT create span when disabled")
+        void dynamicAgentCreation_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceDynamicAgentCreation(false);
+
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            DynamicAgentCreationEvent event = createDynamicAgentCreationEvent("DynamicBot");
+            listener.onPlatformEvent(event);
+
+            verify(mockSpan, never()).name("dynamic_agent:DynamicBot");
+        }
+    }
+
+    // ================================================================================
+    // PROCESS KILLED TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Process Killed Tests")
+    class ProcessKilledTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+        }
+
+        @Test
+        @DisplayName("ProcessKilledEvent should close agent span with killed status")
+        void processKilled_shouldCloseAgentSpan() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ProcessKilledEvent(process));
+
+            // Agent span should be tagged with killed status
+            verify(mockSpan, atLeastOnce()).tag("embabel.agent.status", "killed");
+        }
+    }
+
+    // ================================================================================
+    // HELPER METHODS
+    // ================================================================================
+
+    @SuppressWarnings("unchecked")
+    private static RankingChoiceMadeEvent<?> createRankingChoiceMadeEvent(String chosenName, double score) {
+        AgentPlatform platform = mock(AgentPlatform.class);
+        Agent chosenAgent = mock(Agent.class);
+        lenient().when(chosenAgent.getName()).thenReturn(chosenName);
+        lenient().when(chosenAgent.getDescription()).thenReturn("Test agent");
+
+        Ranking ranking = mock(Ranking.class);
+        lenient().when(ranking.getMatch()).thenReturn(chosenAgent);
+        lenient().when(ranking.getScore()).thenReturn(score);
+
+        Rankings rankings = mock(Rankings.class);
+        lenient().when(rankings.rankings()).thenReturn(java.util.List.of(ranking));
+
+        RankingChoiceMadeEvent event = mock(RankingChoiceMadeEvent.class);
+        lenient().when(event.getAgentPlatform()).thenReturn(platform);
+        lenient().when(event.getChoice()).thenReturn(ranking);
+        lenient().when(event.getRankings()).thenReturn(rankings);
+        lenient().when(event.getBasis()).thenReturn("test basis");
+        lenient().when(event.getChoices()).thenReturn(java.util.List.of(chosenAgent));
+        lenient().when(event.getType()).thenReturn((Class) Agent.class);
+        return event;
+    }
+
+    private static DynamicAgentCreationEvent createDynamicAgentCreationEvent(String agentName) {
+        AgentPlatform platform = mock(AgentPlatform.class);
+        Agent agent = mock(Agent.class);
+        lenient().when(agent.getName()).thenReturn(agentName);
+        return new DynamicAgentCreationEvent(platform, agent, "test basis", java.time.Instant.now());
+    }
+
+    /**
+     * Creates a real LlmRequestEvent (Kotlin final class — cannot be reliably mocked).
+     */
+    @SuppressWarnings("unchecked")
+    private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
+        com.embabel.agent.core.Action action = null;
+        if (actionName != null) {
+            action = mock(com.embabel.agent.core.Action.class);
+            lenient().when(action.getName()).thenReturn(actionName);
+        }
+
+        LlmMetadata llmMetadata = mock(LlmMetadata.class);
+        lenient().when(llmMetadata.getName()).thenReturn(modelName);
+        lenient().when(llmMetadata.getProvider()).thenReturn("openai");
+
+        LlmOptions llmOptions = new LlmOptions();
+        llmOptions.setTemperature(0.7);
+        llmOptions.setMaxTokens(1000);
+        llmOptions.setTopP(0.9);
+
+        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+
+        return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, java.util.Collections.emptyList());
+    }
+
+    private static AgentProcess createMockAgentProcess(String runId, String agentName) {
+        AgentProcess process = mock(AgentProcess.class);
+        Agent agent = mock(Agent.class);
+        Blackboard blackboard = mock(Blackboard.class);
+        ProcessOptions processOptions = mock(ProcessOptions.class);
+        Goal goal = mock(Goal.class);
+
+        lenient().when(process.getId()).thenReturn(runId);
+        lenient().when(process.getAgent()).thenReturn(agent);
+        lenient().when(process.getBlackboard()).thenReturn(blackboard);
+        lenient().when(process.getProcessOptions()).thenReturn(processOptions);
+        lenient().when(process.getParentId()).thenReturn(null);
+        lenient().when(process.getGoal()).thenReturn(goal);
+        lenient().when(process.getFailureInfo()).thenReturn(null);
+
+        lenient().when(agent.getName()).thenReturn(agentName);
+        lenient().when(agent.getGoals()).thenReturn(Set.of(goal));
+        lenient().when(goal.getName()).thenReturn("TestGoal");
+
+        lenient().when(blackboard.getObjects()).thenReturn(Collections.emptyList());
+        lenient().when(blackboard.lastResult()).thenReturn(null);
+        lenient().when(processOptions.getPlannerType()).thenReturn(PlannerType.GOAP);
+
+        return process;
     }
 }

@@ -91,6 +91,11 @@ public class EmbabelTracingObservationHandler
             if (parentSpan != null) {
                 span = tracer.nextSpan(parentSpan).name(context.getName());
             } else {
+                log.warn("No parent span found for {} '{}' (runId: {}), span will use thread-local context. " +
+                                "Active maps: agents={}, actions={}, llms={}, toolLoops={}",
+                        context.getEventType(), context.getName(), context.getRunId(),
+                        activeAgentSpans.keySet(), activeActionSpans.keySet(),
+                        activeLlmSpans.keySet(), activeToolLoopSpans.keySet());
                 span = tracer.nextSpan().name(context.getName());
             }
             span.start();
@@ -208,10 +213,17 @@ public class EmbabelTracingObservationHandler
                 return activeAgentSpans.get(runId);
 
             case TOOL_LOOP:
+                Span toolLoopLlmSpan = activeLlmSpans.get(runId);
+                if (toolLoopLlmSpan != null) {
+                    log.debug("TOOL_LOOP parent resolved to LLM span (runId: {})", runId);
+                    return toolLoopLlmSpan;
+                }
                 Span toolLoopActionSpan = activeActionSpans.get(runId);
                 if (toolLoopActionSpan != null) {
+                    log.debug("TOOL_LOOP parent resolved to ACTION span (runId: {}, no LLM span found)", runId);
                     return toolLoopActionSpan;
                 }
+                log.debug("TOOL_LOOP parent resolved to AGENT span (runId: {}, no LLM or ACTION span found)", runId);
                 return activeAgentSpans.get(runId);
 
             case TOOL_CALL:

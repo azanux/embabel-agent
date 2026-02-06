@@ -48,6 +48,9 @@ class ObservabilityPropertiesTest {
         assertThat(props.isTracePlanning()).isTrue();
         assertThat(props.isTraceStateTransitions()).isTrue();
         assertThat(props.isTraceLifecycleStates()).isTrue();
+        assertThat(props.isTraceRag()).isTrue();
+        assertThat(props.isTraceRanking()).isTrue();
+        assertThat(props.isTraceDynamicAgentCreation()).isTrue();
         // Object binding disabled by default (verbose)
         assertThat(props.isTraceObjectBinding()).isFalse();
     }
@@ -157,6 +160,33 @@ class ObservabilityPropertiesTest {
         props.setTraceLifecycleStates(false);
 
         assertThat(props.isTraceLifecycleStates()).isFalse();
+    }
+
+    @Test
+    void setTraceRag_shouldUpdateValue() {
+        ObservabilityProperties props = new ObservabilityProperties();
+
+        props.setTraceRag(false);
+
+        assertThat(props.isTraceRag()).isFalse();
+    }
+
+    @Test
+    void setTraceRanking_shouldUpdateValue() {
+        ObservabilityProperties props = new ObservabilityProperties();
+
+        props.setTraceRanking(false);
+
+        assertThat(props.isTraceRanking()).isFalse();
+    }
+
+    @Test
+    void setTraceDynamicAgentCreation_shouldUpdateValue() {
+        ObservabilityProperties props = new ObservabilityProperties();
+
+        props.setTraceDynamicAgentCreation(false);
+
+        assertThat(props.isTraceDynamicAgentCreation()).isFalse();
     }
 
     @Test

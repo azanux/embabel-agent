@@ -19,7 +19,15 @@ import com.embabel.agent.api.common.PlannerType;
 import com.embabel.agent.api.event.*;
 import com.embabel.agent.core.*;
 import com.embabel.agent.core.support.LlmInteraction;
+import com.embabel.common.ai.model.LlmOptions;
+import com.embabel.agent.event.AgentProcessRagEvent;
+import com.embabel.agent.event.RagRequestReceivedEvent;
+import com.embabel.agent.event.RagResponseEvent;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.agent.spi.Ranking;
+import com.embabel.agent.spi.Rankings;
+import com.embabel.agent.rag.service.RagRequest;
+import com.embabel.agent.rag.service.RagResponse;
 import com.embabel.common.ai.model.LlmMetadata;
 import com.embabel.plan.Plan;
 import io.opentelemetry.api.OpenTelemetry;
@@ -766,7 +774,7 @@ class EmbabelObservationEventListenerTest {
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.output_class")))
                     .isEqualTo("String");
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.interaction_id")))
-                    .isEqualTo("test-interaction");
+                    .isEqualTo("using");
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.event.type")))
                     .isEqualTo("llm_call");
         }
@@ -795,6 +803,36 @@ class EmbabelObservationEventListenerTest {
                     .isEqualTo(150L);
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("embabel.llm.output_type")))
                     .isEqualTo("String");
+        }
+
+        @Test
+        @DisplayName("LLM span should have GenAI hyperparameter attributes")
+        void llmSpan_shouldHaveGenAiHyperparameterAttributes() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.request.temperature")))
+                    .isEqualTo("0.7");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.request.max_tokens")))
+                    .isEqualTo("1000");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.request.top_p")))
+                    .isEqualTo("0.9");
+            assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.provider.name")))
+                    .isEqualTo("openai");
         }
 
         @Test
@@ -842,6 +880,445 @@ class EmbabelObservationEventListenerTest {
             assertThat(llmSpan).isNotNull();
             // LLM should be child of agent when no action
             assertThat(llmSpan.getParentSpanId()).isEqualTo(agentSpan.getSpanId());
+        }
+    }
+
+    // ================================================================================
+    // RAG EVENT TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("RAG Event Tests")
+    class RagEventTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+        private ObservabilityProperties properties;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            properties = new ObservabilityProperties();
+            properties.setTraceRag(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("RAG request event should create span with correct name and query attribute")
+        void ragRequestEvent_shouldCreateSpan_withCorrectNameAndQuery() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("What is the meaning of life?");
+            RagRequestReceivedEvent ragEvent = new RagRequestReceivedEvent(ragRequest, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(2); // agent + rag
+
+            SpanData ragSpan = findSpanByName(spans, "rag:request");
+            assertThat(ragSpan).isNotNull();
+            assertThat(ragSpan.getAttributes().get(AttributeKey.stringKey("embabel.rag.query")))
+                    .isEqualTo("What is the meaning of life?");
+            assertThat(ragSpan.getAttributes().get(AttributeKey.stringKey("embabel.event.type")))
+                    .isEqualTo("rag");
+            assertThat(ragSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")))
+                    .isEqualTo("rag");
+        }
+
+        @Test
+        @DisplayName("RAG response event should create span with result count attribute")
+        void ragResponseEvent_shouldCreateSpan_withResultCount() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("test query");
+            RagResponse ragResponse = new RagResponse(ragRequest, "test-service", Collections.emptyList(), null, null, java.time.Instant.now());
+            RagResponseEvent ragEvent = new RagResponseEvent(ragResponse, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(2); // agent + rag
+
+            SpanData ragSpan = findSpanByName(spans, "rag:response");
+            assertThat(ragSpan).isNotNull();
+            assertThat(ragSpan.getAttributes().get(AttributeKey.longKey("embabel.rag.result_count")))
+                    .isEqualTo(0L);
+            assertThat(ragSpan.getAttributes().get(AttributeKey.stringKey("embabel.rag.query")))
+                    .isEqualTo("test query");
+        }
+
+        @Test
+        @DisplayName("RAG event should NOT create span when traceRag is false")
+        void ragEvent_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceRag(false);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("test query");
+            RagRequestReceivedEvent ragEvent = new RagRequestReceivedEvent(ragRequest, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(1); // Only agent, no rag span
+
+            assertThat(findSpanByName(spans, "rag:request")).isNull();
+        }
+
+        @Test
+        @DisplayName("RAG span should be child of agent span")
+        void ragSpan_shouldBeChildOfAgentSpan() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            RagRequest ragRequest = RagRequest.Companion.query("test query");
+            RagRequestReceivedEvent ragEvent = new RagRequestReceivedEvent(ragRequest, java.time.Instant.now());
+            AgentProcessRagEvent event = new AgentProcessRagEvent(process, ragEvent);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(event);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+
+            SpanData agentSpan = findSpanByName(spans, "TestAgent");
+            SpanData ragSpan = findSpanByName(spans, "rag:request");
+
+            assertThat(ragSpan).isNotNull();
+            assertThat(ragSpan.getParentSpanId()).isEqualTo(agentSpan.getSpanId());
+            assertThat(ragSpan.getTraceId()).isEqualTo(agentSpan.getTraceId());
+        }
+    }
+
+    // ================================================================================
+    // RANKING EVENT TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Ranking Event Tests")
+    class RankingEventTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+        private ObservabilityProperties properties;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            properties = new ObservabilityProperties();
+            properties.setTraceRanking(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("RankingChoiceMadeEvent should create span with correct attributes")
+        void rankingChoiceMade_shouldCreateSpan() {
+            RankingChoiceMadeEvent<?> event = createRankingChoiceMadeEvent("TestAgent", 0.95);
+
+            listener.onPlatformEvent(event);
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(1);
+
+            SpanData span = spans.get(0);
+            assertThat(span.getName()).isEqualTo("ranking:choice_made");
+            assertThat(span.getAttributes().get(AttributeKey.stringKey("embabel.event.type")))
+                    .isEqualTo("ranking");
+            assertThat(span.getAttributes().get(AttributeKey.stringKey("embabel.ranking.chosen")))
+                    .isEqualTo("TestAgent");
+        }
+
+        @Test
+        @DisplayName("RankingChoiceCouldNotBeMadeEvent should create error span")
+        void rankingChoiceCouldNotBeMade_shouldCreateErrorSpan() {
+            RankingChoiceCouldNotBeMadeEvent<?> event = createRankingCouldNotBeMadeEvent();
+
+            listener.onPlatformEvent(event);
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(1);
+
+            SpanData span = spans.get(0);
+            assertThat(span.getName()).isEqualTo("ranking:no_choice");
+            assertThat(span.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+        }
+
+        @Test
+        @DisplayName("Ranking event should NOT create span when disabled")
+        void rankingEvent_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceRanking(false);
+
+            RankingChoiceMadeEvent<?> event = createRankingChoiceMadeEvent("TestAgent", 0.95);
+            listener.onPlatformEvent(event);
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).isEmpty();
+        }
+    }
+
+    // ================================================================================
+    // DYNAMIC AGENT CREATION TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Dynamic Agent Creation Tests")
+    class DynamicAgentCreationTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+        private ObservabilityProperties properties;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            properties = new ObservabilityProperties();
+            properties.setTraceDynamicAgentCreation(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("DynamicAgentCreationEvent should create span with agent name")
+        void dynamicAgentCreation_shouldCreateSpan() {
+            DynamicAgentCreationEvent event = createDynamicAgentCreationEvent("DynamicBot");
+
+            listener.onPlatformEvent(event);
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(1);
+
+            SpanData span = spans.get(0);
+            assertThat(span.getName()).isEqualTo("dynamic_agent:DynamicBot");
+            assertThat(span.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")))
+                    .isEqualTo("create_agent");
+            assertThat(span.getAttributes().get(AttributeKey.stringKey("embabel.event.type")))
+                    .isEqualTo("dynamic_agent_creation");
+            assertThat(span.getAttributes().get(AttributeKey.stringKey("embabel.agent.name")))
+                    .isEqualTo("DynamicBot");
+        }
+
+        @Test
+        @DisplayName("DynamicAgentCreationEvent should NOT create span when disabled")
+        void dynamicAgentCreation_shouldNotCreateSpan_whenDisabled() {
+            properties.setTraceDynamicAgentCreation(false);
+
+            DynamicAgentCreationEvent event = createDynamicAgentCreationEvent("DynamicBot");
+            listener.onPlatformEvent(event);
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).isEmpty();
+        }
+    }
+
+    // ================================================================================
+    // PROCESS KILLED TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Process Killed Tests")
+    class ProcessKilledTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            ObservabilityProperties properties = new ObservabilityProperties();
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("ProcessKilledEvent should end agent span with ERROR status")
+        void processKilled_shouldEndAgentSpanWithError() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ProcessKilledEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(1);
+
+            SpanData agentSpan = spans.get(0);
+            assertThat(agentSpan.getName()).isEqualTo("TestAgent");
+            assertThat(agentSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+            assertThat(agentSpan.getAttributes().get(AttributeKey.stringKey("embabel.agent.status")))
+                    .isEqualTo("killed");
+        }
+    }
+
+    // ================================================================================
+    // TOOL LOOP HIERARCHY TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Tool Loop Hierarchy Tests")
+    class ToolLoopHierarchyTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            ObservabilityProperties properties = new ObservabilityProperties();
+            properties.setTraceLlmCalls(true);
+            properties.setTraceToolLoop(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("Tool loop should be child of LLM span, not action span")
+        void toolLoop_shouldBeChildOfLlmSpan() {
+            // Simulate: Action -> LLM Request -> ToolLoop -> ToolLoop Complete -> LLM Response -> Action Result
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+
+            Action action = mock(Action.class);
+            when(action.getName()).thenReturn("com.example.MyAction");
+            ToolLoopStartEvent toolLoopStart = new ToolLoopStartEvent(
+                    process, action, List.of("WebSearch"), 10, "interaction-1", String.class);
+            ToolLoopCompletedEvent toolLoopCompleted = toolLoopStart.completedEvent(3, false);
+
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(toolLoopStart);
+            listener.onProcessEvent(toolLoopCompleted);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            // Should have: agent, action, llm, tool-loop
+            assertThat(spans).hasSize(4);
+
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData toolLoopSpan = spans.stream()
+                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .findFirst()
+                    .orElse(null);
+
+            assertThat(actionSpan).isNotNull();
+            assertThat(llmSpan).isNotNull();
+            assertThat(toolLoopSpan).isNotNull();
+
+            // LLM should be child of action
+            assertThat(llmSpan.getParentSpanId()).isEqualTo(actionSpan.getSpanId());
+
+            // Tool loop should be child of LLM (NOT action)
+            assertThat(toolLoopSpan.getParentSpanId())
+                    .as("Tool loop should be child of LLM span, not action span")
+                    .isEqualTo(llmSpan.getSpanId());
         }
     }
 
@@ -1090,44 +1567,87 @@ class EmbabelObservationEventListenerTest {
         return event;
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Creates a real LlmRequestEvent (Kotlin final class — cannot be reliably mocked).
+     */
     private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
             AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
-        LlmRequestEvent<O> event = mock(LlmRequestEvent.class);
-        lenient().when(event.getAgentProcess()).thenReturn(process);
-
+        Action action = null;
         if (actionName != null) {
-            Action action = mock(Action.class);
+            action = mock(Action.class);
             lenient().when(action.getName()).thenReturn(actionName);
-            lenient().when(event.getAction()).thenReturn(action);
-        } else {
-            lenient().when(event.getAction()).thenReturn(null);
         }
-
-        lenient().when(event.getOutputClass()).thenReturn(outputClass);
 
         LlmMetadata llmMetadata = mock(LlmMetadata.class);
         lenient().when(llmMetadata.getName()).thenReturn(modelName);
-        lenient().when(event.getLlmMetadata()).thenReturn(llmMetadata);
+        lenient().when(llmMetadata.getProvider()).thenReturn("openai");
 
-        LlmInteraction interaction = mock(LlmInteraction.class);
-        lenient().when(interaction.getId()).thenReturn("test-interaction");
-        lenient().when(event.getInteraction()).thenReturn(interaction);
+        LlmOptions llmOptions = new LlmOptions();
+        llmOptions.setTemperature(0.7);
+        llmOptions.setMaxTokens(1000);
+        llmOptions.setTopP(0.9);
 
+        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+
+        return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, Collections.emptyList());
+    }
+
+    /**
+     * Creates a real LlmResponseEvent via the request's factory method.
+     */
+    @SuppressWarnings("unchecked")
+    private static <O> LlmResponseEvent<O> createMockLlmResponseEvent(
+            LlmRequestEvent<?> request, O response) {
+        LlmRequestEvent<O> typedRequest = (LlmRequestEvent<O>) request;
+        return typedRequest.responseEvent(response, Duration.ofMillis(150));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static RankingChoiceMadeEvent<?> createRankingChoiceMadeEvent(String chosenName, double score) {
+        AgentPlatform platform = mock(AgentPlatform.class);
+        Agent chosenAgent = mock(Agent.class);
+        lenient().when(chosenAgent.getName()).thenReturn(chosenName);
+        lenient().when(chosenAgent.getDescription()).thenReturn("Test agent");
+
+        Ranking ranking = mock(Ranking.class);
+        lenient().when(ranking.getMatch()).thenReturn(chosenAgent);
+        lenient().when(ranking.getScore()).thenReturn(score);
+
+        Rankings rankings = mock(Rankings.class);
+        lenient().when(rankings.rankings()).thenReturn(List.of(ranking));
+
+        RankingChoiceMadeEvent event = mock(RankingChoiceMadeEvent.class);
+        lenient().when(event.getAgentPlatform()).thenReturn(platform);
+        lenient().when(event.getChoice()).thenReturn(ranking);
+        lenient().when(event.getRankings()).thenReturn(rankings);
+        lenient().when(event.getBasis()).thenReturn("test basis");
+        lenient().when(event.getChoices()).thenReturn(List.of(chosenAgent));
+        lenient().when(event.getType()).thenReturn((Class) Agent.class);
         return event;
     }
 
     @SuppressWarnings("unchecked")
-    private static <O> LlmResponseEvent<O> createMockLlmResponseEvent(
-            LlmRequestEvent<?> request, O response) {
-        // Capture agentProcess before stubbing to avoid nested mock calls
-        AgentProcess agentProcess = request.getAgentProcess();
-        LlmResponseEvent<O> event = mock(LlmResponseEvent.class);
-        lenient().when(event.getAgentProcess()).thenReturn(agentProcess);
-        lenient().doReturn(request).when(event).getRequest();
-        lenient().when(event.getResponse()).thenReturn(response);
-        lenient().when(event.getRunningTime()).thenReturn(Duration.ofMillis(150));
+    private static RankingChoiceCouldNotBeMadeEvent<?> createRankingCouldNotBeMadeEvent() {
+        AgentPlatform platform = mock(AgentPlatform.class);
+
+        Rankings rankings = mock(Rankings.class);
+        lenient().when(rankings.rankings()).thenReturn(Collections.emptyList());
+
+        RankingChoiceCouldNotBeMadeEvent event = mock(RankingChoiceCouldNotBeMadeEvent.class);
+        lenient().when(event.getAgentPlatform()).thenReturn(platform);
+        lenient().when(event.getRankings()).thenReturn(rankings);
+        lenient().when(event.getConfidenceCutOff()).thenReturn(0.7);
+        lenient().when(event.getBasis()).thenReturn("test basis");
+        lenient().when(event.getChoices()).thenReturn(Collections.emptyList());
+        lenient().when(event.getType()).thenReturn((Class) Agent.class);
         return event;
+    }
+
+    private static DynamicAgentCreationEvent createDynamicAgentCreationEvent(String agentName) {
+        AgentPlatform platform = mock(AgentPlatform.class);
+        Agent agent = mock(Agent.class);
+        lenient().when(agent.getName()).thenReturn(agentName);
+        return new DynamicAgentCreationEvent(platform, agent, "test basis", java.time.Instant.now());
     }
 
     private static SpanData findSpanByName(List<SpanData> spans, String name) {

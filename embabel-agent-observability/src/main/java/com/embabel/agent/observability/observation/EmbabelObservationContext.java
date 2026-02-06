@@ -46,7 +46,13 @@ public class EmbabelObservationContext extends Observation.Context {
         /** LLM call event. */
         LLM_CALL,
         /** Tool loop execution event. */
-        TOOL_LOOP
+        TOOL_LOOP,
+        /** RAG event. */
+        RAG,
+        /** Ranking/selection event. */
+        RANKING,
+        /** Dynamic agent creation event. */
+        DYNAMIC_AGENT_CREATION
     }
 
     private final boolean root;
@@ -181,6 +187,37 @@ public class EmbabelObservationContext extends Observation.Context {
      */
     public static EmbabelObservationContext toolLoop(String runId, String toolLoopName) {
         return new EmbabelObservationContext(false, runId, toolLoopName, EventType.TOOL_LOOP, null);
+    }
+
+    /**
+     * Creates context for a ranking event.
+     *
+     * @param rankingName name of the ranking event
+     * @return the observation context
+     */
+    public static EmbabelObservationContext ranking(String rankingName) {
+        return new EmbabelObservationContext(false, "", rankingName, EventType.RANKING, null);
+    }
+
+    /**
+     * Creates context for a dynamic agent creation event.
+     *
+     * @param agentName name of the dynamically created agent
+     * @return the observation context
+     */
+    public static EmbabelObservationContext dynamicAgentCreation(String agentName) {
+        return new EmbabelObservationContext(false, "", agentName, EventType.DYNAMIC_AGENT_CREATION, null);
+    }
+
+    /**
+     * Creates context for a RAG event.
+     *
+     * @param runId   unique run identifier
+     * @param ragName name of the RAG event
+     * @return the observation context
+     */
+    public static EmbabelObservationContext rag(String runId, String ragName) {
+        return new EmbabelObservationContext(false, runId, ragName, EventType.RAG, null);
     }
 
     /**

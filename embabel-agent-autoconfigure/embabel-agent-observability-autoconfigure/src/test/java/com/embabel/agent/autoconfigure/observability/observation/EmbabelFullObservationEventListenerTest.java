@@ -25,7 +25,10 @@ import com.embabel.agent.core.AgentProcess;
 import com.embabel.agent.core.Blackboard;
 import com.embabel.agent.core.Goal;
 import com.embabel.agent.core.ProcessOptions;
+import com.embabel.agent.core.support.LlmInteraction;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.common.ai.model.LlmMetadata;
+import com.embabel.common.ai.model.LlmOptions;
 import com.embabel.plan.Plan;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.tracing.Tracer;
@@ -596,6 +599,43 @@ class EmbabelFullObservationEventListenerTest {
         assertThat(inputValue).endsWith("...");
     }
 
+    // --- LLM Call Tests ---
+
+    @Test
+    @DisplayName("LLM span should have GenAI hyperparameter attributes")
+    void llmSpan_shouldHaveGenAiHyperparameterAttributes() {
+        properties.setTraceLlmCalls(true);
+        AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+        ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+        LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+        LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+        ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+        listener.onProcessEvent(new AgentProcessCreationEvent(process));
+        listener.onProcessEvent(actionStart);
+        listener.onProcessEvent(llmRequest);
+        listener.onProcessEvent(llmResponse);
+        listener.onProcessEvent(actionResult);
+        listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+        List<SpanData> spans = spanExporter.getFinishedSpanItems();
+        SpanData llmSpan = spans.stream()
+                .filter(s -> s.getName().equals("llm:gpt-4"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.request.model")))
+                .isEqualTo("gpt-4");
+        assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.request.temperature")))
+                .isEqualTo("0.7");
+        assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.request.max_tokens")))
+                .isEqualTo("1000");
+        assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.request.top_p")))
+                .isEqualTo("0.9");
+        assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.provider.name")))
+                .isEqualTo("openai");
+    }
+
     // --- Helper Methods ---
 
     /**
@@ -757,6 +797,41 @@ class EmbabelFullObservationEventListenerTest {
         when(plan.getActions()).thenReturn(List.of(planAction));
         when(plan.getGoal()).thenReturn(planGoal);
         return plan;
+    }
+
+    /**
+     * Creates a real LlmRequestEvent (Kotlin final class — cannot be reliably mocked).
+     */
+    private <O> LlmRequestEvent<O> createMockLlmRequestEvent(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
+        com.embabel.agent.core.Action action = null;
+        if (actionName != null) {
+            action = mock(com.embabel.agent.core.Action.class);
+            lenient().when(action.getName()).thenReturn(actionName);
+        }
+
+        LlmMetadata llmMetadata = mock(LlmMetadata.class);
+        lenient().when(llmMetadata.getName()).thenReturn(modelName);
+        lenient().when(llmMetadata.getProvider()).thenReturn("openai");
+
+        LlmOptions llmOptions = new LlmOptions();
+        llmOptions.setTemperature(0.7);
+        llmOptions.setMaxTokens(1000);
+        llmOptions.setTopP(0.9);
+
+        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+
+        return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, Collections.emptyList());
+    }
+
+    /**
+     * Creates a real LlmResponseEvent via the request's factory method.
+     */
+    @SuppressWarnings("unchecked")
+    private <O> LlmResponseEvent<O> createMockLlmResponseEvent(
+            LlmRequestEvent<?> request, O response) {
+        LlmRequestEvent<O> typedRequest = (LlmRequestEvent<O>) request;
+        return typedRequest.responseEvent(response, Duration.ofMillis(150));
     }
 
     // --- Test Helper Classes ---

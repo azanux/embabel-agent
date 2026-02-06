@@ -198,8 +198,63 @@ class EmbabelTracingObservationHandlerTest {
     class ToolLoopParentResolution {
 
         @Test
-        @DisplayName("ToolLoop span should use Action span as parent when Action is active")
-        void toolLoopSpan_shouldUseActionAsParent() {
+        @DisplayName("ToolLoop span should use LLM span as parent when LLM is active")
+        void toolLoopSpan_shouldUseLlmAsParent() {
+            Span agentSpan = createMockSpan("agent-span");
+            Span actionSpan = createMockSpan("action-span");
+            Span llmSpan = createMockSpan("llm-span");
+            Span toolLoopSpan = createMockSpan("tool-loop-span");
+
+            Tracer.SpanInScope agentScope = mock(Tracer.SpanInScope.class);
+            Tracer.SpanInScope actionScope = mock(Tracer.SpanInScope.class);
+            Tracer.SpanInScope llmScope = mock(Tracer.SpanInScope.class);
+
+            // Agent start: root span
+            when(tracer.nextSpan()).thenReturn(agentSpan);
+            when(agentSpan.name(anyString())).thenReturn(agentSpan);
+            when(agentSpan.start()).thenReturn(agentSpan);
+            when(tracer.withSpan(null)).thenReturn(agentScope);
+
+            var agentCtx = EmbabelObservationContext.rootAgent("run-1", "TestAgent");
+            handler.onStart(agentCtx);
+            when(tracer.withSpan(agentSpan)).thenReturn(agentScope);
+            handler.onScopeOpened(agentCtx);
+
+            // Action start: child of agent
+            when(tracer.nextSpan(agentSpan)).thenReturn(actionSpan);
+            when(actionSpan.name(anyString())).thenReturn(actionSpan);
+            when(actionSpan.start()).thenReturn(actionSpan);
+
+            var actionCtx = EmbabelObservationContext.action("run-1", "MyAction");
+            handler.onStart(actionCtx);
+            when(tracer.withSpan(actionSpan)).thenReturn(actionScope);
+            handler.onScopeOpened(actionCtx);
+
+            // LLM call start: child of action
+            when(tracer.nextSpan(actionSpan)).thenReturn(llmSpan);
+            when(llmSpan.name(anyString())).thenReturn(llmSpan);
+            when(llmSpan.start()).thenReturn(llmSpan);
+
+            var llmCtx = EmbabelObservationContext.llmCall("run-1", "llm:gpt-4");
+            handler.onStart(llmCtx);
+            when(tracer.withSpan(llmSpan)).thenReturn(llmScope);
+            handler.onScopeOpened(llmCtx);
+
+            // Tool loop start: should use LLM as parent (NOT action)
+            when(tracer.nextSpan(llmSpan)).thenReturn(toolLoopSpan);
+            when(toolLoopSpan.name(anyString())).thenReturn(toolLoopSpan);
+            when(toolLoopSpan.start()).thenReturn(toolLoopSpan);
+
+            var toolLoopCtx = EmbabelObservationContext.toolLoop("run-1", "tool-loop:interaction-1");
+            handler.onStart(toolLoopCtx);
+
+            // Verify: ToolLoop span was created with llmSpan as parent
+            verify(tracer).nextSpan(llmSpan);
+        }
+
+        @Test
+        @DisplayName("ToolLoop span should fall back to Action span when no LLM is active")
+        void toolLoopSpan_shouldFallbackToActionAsParent() {
             Span agentSpan = createMockSpan("agent-span");
             Span actionSpan = createMockSpan("action-span");
             Span toolLoopSpan = createMockSpan("tool-loop-span");

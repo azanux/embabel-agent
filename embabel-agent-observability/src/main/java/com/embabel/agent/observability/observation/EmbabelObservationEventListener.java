@@ -21,7 +21,14 @@ import com.embabel.agent.core.AgentProcess;
 import com.embabel.agent.core.Blackboard;
 import com.embabel.agent.core.IoBinding;
 import com.embabel.agent.core.ToolGroupMetadata;
+import com.embabel.agent.event.AgentProcessRagEvent;
+import com.embabel.agent.event.RagEvent;
+import com.embabel.agent.event.RagRequestReceivedEvent;
+import com.embabel.agent.event.RagResponseEvent;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.common.ai.model.LlmOptions;
+import com.embabel.agent.rag.pipeline.event.*;
+import com.embabel.agent.spi.Ranking;
 import com.embabel.plan.Plan;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
@@ -184,6 +191,33 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
             }
             case LlmResponseEvent<?> e -> {
                 if (properties.isTraceLlmCalls()) onLlmResponse(e);
+            }
+            case AgentProcessRagEvent e -> {
+                if (properties.isTraceRag()) onRagEvent(e);
+            }
+            case ProcessKilledEvent e -> onProcessKilled(e);
+            default -> {}
+        }
+    }
+
+    @Override
+    public void onPlatformEvent(@NotNull AgentPlatformEvent event) {
+        if (!isTracingEnabled()) {
+            return;
+        }
+
+        switch (event) {
+            case RankingChoiceMadeEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingChoiceMade(e);
+            }
+            case RankingChoiceCouldNotBeMadeEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingChoiceCouldNotBeMade(e);
+            }
+            case RankingChoiceRequestEvent<?> e -> {
+                if (properties.isTraceRanking()) onRankingRequest(e);
+            }
+            case DynamicAgentCreationEvent e -> {
+                if (properties.isTraceDynamicAgentCreation()) onDynamicAgentCreation(e);
             }
             default -> {}
         }
@@ -856,11 +890,26 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer action span, fallback to agent span
-        var actionKey = "action:" + runId + ":" + actionName;
-        SpanContext parentCtx = activeSpans.get(actionKey);
+        // Find parent: prefer llm span, then action span, fallback to agent span
+        var llmKey = "llm:" + runId + ":" + actionName;
+        SpanContext parentCtx = activeSpans.get(llmKey);
+        String resolvedParent;
+        if (parentCtx != null) {
+            resolvedParent = "llm (key=" + llmKey + ")";
+        } else {
+            var actionKey = "action:" + runId + ":" + actionName;
+            parentCtx = activeSpans.get(actionKey);
+            if (parentCtx != null) {
+                resolvedParent = "action (key=" + actionKey + ")";
+            } else {
+                parentCtx = activeSpans.get("agent:" + runId);
+                resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE (using Context.current())";
+            }
+        }
+        log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
+                resolvedParent, runId, actionName, interactionId, activeSpans.keySet());
         if (parentCtx == null) {
-            parentCtx = activeSpans.get("agent:" + runId);
+            log.warn("No parent found for tool loop {} (runId: {}). Using thread-local context as fallback.", interactionId, runId);
         }
         Context parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
 
@@ -936,6 +985,23 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
                 .setAttribute("embabel.event.type", "llm_call")
                 .startSpan();
 
+        // GenAI hyperparameters from LlmOptions
+        LlmOptions llmOptions = event.getInteraction().getLlm();
+        if (llmOptions.getTemperature() != null) {
+            span.setAttribute("gen_ai.request.temperature", String.valueOf(llmOptions.getTemperature()));
+        }
+        if (llmOptions.getMaxTokens() != null) {
+            span.setAttribute("gen_ai.request.max_tokens", String.valueOf(llmOptions.getMaxTokens()));
+        }
+        if (llmOptions.getTopP() != null) {
+            span.setAttribute("gen_ai.request.top_p", String.valueOf(llmOptions.getTopP()));
+        }
+        // Provider from LlmMetadata
+        String provider = event.getLlmMetadata().getProvider();
+        if (provider != null && !provider.isEmpty()) {
+            span.setAttribute("gen_ai.provider.name", provider);
+        }
+
         // CRITICAL: makeCurrent() so tool-loop becomes child of this LLM span
         Scope scope = span.makeCurrent();
         activeSpans.put("llm:" + runId + ":" + actionName, new SpanContext(span, scope));
@@ -967,6 +1033,168 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
 
             log.debug("Completed LLM span (runId: {}, action: {})", runId, actionName);
         }
+    }
+
+    // ==================== Ranking Events ====================
+
+    private void onRankingRequest(RankingChoiceRequestEvent<?> event) {
+        Span span = tracer.spanBuilder("ranking:request")
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("embabel.event.type", "ranking")
+                .setAttribute("gen_ai.operation.name", "ranking")
+                .setAttribute("embabel.ranking.type", event.getType().getSimpleName())
+                .setAttribute("embabel.ranking.choices_count", (long) event.getChoices().size())
+                .setAttribute("input.value", truncate(event.getBasis().toString()))
+                .startSpan();
+
+        span.setStatus(StatusCode.OK);
+        span.end();
+
+        log.debug("Recorded ranking request event");
+    }
+
+    private void onRankingChoiceMade(RankingChoiceMadeEvent<?> event) {
+        Ranking<?> choice = event.getChoice();
+        String chosenName = choice.getMatch().getName();
+
+        Span span = tracer.spanBuilder("ranking:choice_made")
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("embabel.event.type", "ranking")
+                .setAttribute("gen_ai.operation.name", "ranking")
+                .setAttribute("embabel.ranking.chosen", chosenName)
+                .setAttribute("embabel.ranking.score", choice.getScore())
+                .setAttribute("embabel.ranking.type", event.getType().getSimpleName())
+                .setAttribute("embabel.ranking.choices_count", (long) event.getChoices().size())
+                .setAttribute("input.value", truncate(event.getBasis().toString()))
+                .setAttribute("output.value", truncate(event.getRankings().infoString(true, 0)))
+                .startSpan();
+
+        span.setStatus(StatusCode.OK);
+        span.end();
+
+        log.debug("Recorded ranking choice made: {}", chosenName);
+    }
+
+    private void onRankingChoiceCouldNotBeMade(RankingChoiceCouldNotBeMadeEvent<?> event) {
+        Span span = tracer.spanBuilder("ranking:no_choice")
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("embabel.event.type", "ranking")
+                .setAttribute("gen_ai.operation.name", "ranking")
+                .setAttribute("embabel.ranking.type", event.getType().getSimpleName())
+                .setAttribute("embabel.ranking.confidence_cutoff", event.getConfidenceCutOff())
+                .setAttribute("embabel.ranking.choices_count", (long) event.getChoices().size())
+                .setAttribute("input.value", truncate(event.getBasis().toString()))
+                .setAttribute("output.value", truncate(event.getRankings().infoString(true, 0)))
+                .startSpan();
+
+        span.setStatus(StatusCode.ERROR, "No ranking choice could be made");
+        span.end();
+
+        log.debug("Recorded ranking choice could not be made");
+    }
+
+    // ==================== Dynamic Agent Creation ====================
+
+    private void onDynamicAgentCreation(DynamicAgentCreationEvent event) {
+        String agentName = event.getAgent().getName();
+
+        Span span = tracer.spanBuilder("dynamic_agent:" + agentName)
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("embabel.event.type", "dynamic_agent_creation")
+                .setAttribute("gen_ai.operation.name", "create_agent")
+                .setAttribute("embabel.agent.name", agentName)
+                .setAttribute("input.value", truncate(event.getBasis().toString()))
+                .startSpan();
+
+        span.setStatus(StatusCode.OK);
+        span.end();
+
+        log.debug("Recorded dynamic agent creation: {}", agentName);
+    }
+
+    // ==================== Process Killed ====================
+
+    /**
+     * Handles process kill - closes the agent span with ERROR status.
+     */
+    private void onProcessKilled(ProcessKilledEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        String key = "agent:" + runId;
+
+        SpanContext ctx = activeSpans.remove(key);
+        inputSnapshots.remove(key);
+        planIterations.remove(runId);
+
+        if (ctx != null) {
+            ctx.span.setAttribute("embabel.agent.status", "killed");
+            ctx.span.setStatus(StatusCode.ERROR, "Agent process was killed");
+            ctx.scope.close();
+            ctx.span.end();
+
+            log.debug("Recorded process killed for agent runId: {}", runId);
+        }
+    }
+
+    // ==================== RAG Events ====================
+
+    /**
+     * Creates an instant span for a RAG event.
+     * Determines span name and attributes based on the specific RAG event subtype.
+     */
+    private void onRagEvent(AgentProcessRagEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+        RagEvent ragEvent = event.getRagEvent();
+
+        // Determine span name and key attributes based on RAG event type
+        String spanName;
+        if (ragEvent instanceof RagRequestReceivedEvent) {
+            spanName = "rag:request";
+        } else if (ragEvent instanceof RagResponseEvent) {
+            spanName = "rag:response";
+        } else if (ragEvent instanceof EnhancementStartingRagPipelineEvent e) {
+            spanName = "rag:enhancement:" + e.getEnhancerName();
+        } else if (ragEvent instanceof EnhancementCompletedRagPipelineEvent e) {
+            spanName = "rag:enhancement:" + e.getEnhancerName() + ":done";
+        } else if (ragEvent instanceof InitialRequestRagPipelineEvent) {
+            spanName = "rag:pipeline:request";
+        } else if (ragEvent instanceof InitialResponseRagPipelineEvent) {
+            spanName = "rag:pipeline:response";
+        } else {
+            spanName = "rag:event";
+        }
+
+        SpanContext parentCtx = findParentSpan(runId);
+        Context parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
+
+        io.opentelemetry.api.trace.SpanBuilder spanBuilder = tracer.spanBuilder(spanName)
+                .setParent(parentContext)
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("embabel.event.type", "rag")
+                .setAttribute("gen_ai.operation.name", "rag")
+                .setAttribute("embabel.rag.query", ragEvent.getRequest().getQuery());
+
+        // Add type-specific attributes
+        if (ragEvent instanceof RagRequestReceivedEvent) {
+            spanBuilder.setAttribute("input.value", truncate(ragEvent.getRequest().getQuery()));
+        } else if (ragEvent instanceof RagResponseEvent re) {
+            spanBuilder.setAttribute("embabel.rag.result_count", (long) re.getRagResponse().getResults().size());
+            spanBuilder.setAttribute("output.value", truncate(re.getRagResponse().getResults().toString()));
+        } else if (ragEvent instanceof EnhancementStartingRagPipelineEvent e) {
+            spanBuilder.setAttribute("embabel.rag.enhancer", e.getEnhancerName());
+        } else if (ragEvent instanceof EnhancementCompletedRagPipelineEvent e) {
+            spanBuilder.setAttribute("embabel.rag.enhancer", e.getEnhancerName());
+        } else if (ragEvent instanceof RagPipelineEvent pe) {
+            spanBuilder.setAttribute("embabel.rag.description", pe.getDescription());
+        }
+
+        // Instant span
+        Span span = spanBuilder.startSpan();
+        span.setStatus(StatusCode.OK);
+        span.end();
+
+        log.debug("Recorded RAG event: {} (runId: {})", spanName, runId);
     }
 
     // ==================== Utility Methods ====================

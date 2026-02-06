@@ -82,6 +82,15 @@ public class ObservabilityProperties {
     /** Trace lifecycle states. */
     private boolean traceLifecycleStates = true;
 
+    /** Trace RAG events (request, response, pipeline). */
+    private boolean traceRag = true;
+
+    /** Trace ranking/selection events (agent routing decisions). */
+    private boolean traceRanking = true;
+
+    /** Trace dynamic agent creation events. */
+    private boolean traceDynamicAgentCreation = true;
+
     /** Trace object binding (verbose, disabled by default). */
     private boolean traceObjectBinding = false;
 
@@ -293,6 +302,54 @@ public class ObservabilityProperties {
      */
     public void setTraceLifecycleStates(boolean traceLifecycleStates) {
         this.traceLifecycleStates = traceLifecycleStates;
+    }
+
+    /**
+     * Returns whether RAG events tracing is enabled.
+     * @return true if RAG events are traced
+     */
+    public boolean isTraceRag() {
+        return traceRag;
+    }
+
+    /**
+     * Sets whether to trace RAG events.
+     * @param traceRag true to trace RAG events
+     */
+    public void setTraceRag(boolean traceRag) {
+        this.traceRag = traceRag;
+    }
+
+    /**
+     * Returns whether ranking events tracing is enabled.
+     * @return true if ranking events are traced
+     */
+    public boolean isTraceRanking() {
+        return traceRanking;
+    }
+
+    /**
+     * Sets whether to trace ranking events.
+     * @param traceRanking true to trace ranking events
+     */
+    public void setTraceRanking(boolean traceRanking) {
+        this.traceRanking = traceRanking;
+    }
+
+    /**
+     * Returns whether dynamic agent creation tracing is enabled.
+     * @return true if dynamic agent creation is traced
+     */
+    public boolean isTraceDynamicAgentCreation() {
+        return traceDynamicAgentCreation;
+    }
+
+    /**
+     * Sets whether to trace dynamic agent creation.
+     * @param traceDynamicAgentCreation true to trace dynamic agent creation
+     */
+    public void setTraceDynamicAgentCreation(boolean traceDynamicAgentCreation) {
+        this.traceDynamicAgentCreation = traceDynamicAgentCreation;
     }
 
     /**
