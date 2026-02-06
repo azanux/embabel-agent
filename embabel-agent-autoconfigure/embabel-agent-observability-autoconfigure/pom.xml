@@ -53,6 +53,20 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring Web (for HTTP body caching and observation filters) -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Servlet API (for OncePerRequestFilter, HttpServletRequest/Response) -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- OpenTelemetry Semantic Conventions (ServiceAttributes) -->
         <dependency>
             <groupId>io.opentelemetry.semconv</groupId>

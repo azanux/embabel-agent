@@ -94,6 +94,9 @@ public class ObservabilityProperties {
     /** Trace object binding (verbose, disabled by default). */
     private boolean traceObjectBinding = false;
 
+    /** Trace HTTP request/response details including bodies, headers and params (disabled by default). */
+    private boolean traceHttpDetails = false;
+
     // Getters and Setters
 
     /**
@@ -366,5 +369,21 @@ public class ObservabilityProperties {
      */
     public void setTraceObjectBinding(boolean traceObjectBinding) {
         this.traceObjectBinding = traceObjectBinding;
+    }
+
+    /**
+     * Returns whether HTTP request/response details tracing is enabled.
+     * @return true if HTTP details are traced
+     */
+    public boolean isTraceHttpDetails() {
+        return traceHttpDetails;
+    }
+
+    /**
+     * Sets whether to trace HTTP request/response details.
+     * @param traceHttpDetails true to trace HTTP details
+     */
+    public void setTraceHttpDetails(boolean traceHttpDetails) {
+        this.traceHttpDetails = traceHttpDetails;
     }
 }

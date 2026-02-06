@@ -99,6 +99,35 @@ public class ObservabilityAutoConfiguration {
     }
 
     /**
+     * Creates a servlet filter that wraps request/response for body caching.
+     *
+     * @return the body caching filter
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.springframework.web.util.ContentCachingRequestWrapper")
+    @ConditionalOnProperty(prefix = "embabel.observability", name = "trace-http-details", havingValue = "true")
+    public HttpBodyCachingFilter httpBodyCachingFilter() {
+        log.debug("Configuring HTTP body caching filter for request/response tracing");
+        return new HttpBodyCachingFilter();
+    }
+
+    /**
+     * Creates observation filter to enrich HTTP server observations with request/response details.
+     *
+     * @param properties the observability properties
+     * @return the HTTP request observation filter
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnClass(name = "org.springframework.http.server.observation.ServerRequestObservationContext")
+    @ConditionalOnProperty(prefix = "embabel.observability", name = "trace-http-details", havingValue = "true")
+    public HttpRequestObservationFilter httpRequestObservationFilter(ObservabilityProperties properties) {
+        log.debug("Configuring HTTP request observation filter for request/response tracing");
+        return new HttpRequestObservationFilter(properties.getMaxAttributeLength());
+    }
+
+    /**
      * Creates filter to enrich Spring AI LLM observations with prompt/completion.
      *
      * @param properties the observability properties

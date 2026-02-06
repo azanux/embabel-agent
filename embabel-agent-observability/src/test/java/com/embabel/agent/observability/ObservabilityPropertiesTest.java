@@ -53,6 +53,8 @@ class ObservabilityPropertiesTest {
         assertThat(props.isTraceDynamicAgentCreation()).isTrue();
         // Object binding disabled by default (verbose)
         assertThat(props.isTraceObjectBinding()).isFalse();
+        // HTTP details disabled by default (security/performance)
+        assertThat(props.isTraceHttpDetails()).isFalse();
     }
 
     // Test setters work correctly
@@ -196,6 +198,15 @@ class ObservabilityPropertiesTest {
         props.setTraceObjectBinding(true);
 
         assertThat(props.isTraceObjectBinding()).isTrue();
+    }
+
+    @Test
+    void setTraceHttpDetails_shouldUpdateValue() {
+        var props = new ObservabilityProperties();
+
+        props.setTraceHttpDetails(true);
+
+        assertThat(props.isTraceHttpDetails()).isTrue();
     }
 
     // Test valueOf for Implementation enum

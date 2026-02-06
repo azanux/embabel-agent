@@ -149,6 +149,44 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
+    @Test
+    void httpBodyCachingFilter_shouldNotBeCreated_byDefault() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(HttpBodyCachingFilter.class);
+                });
+    }
+
+    @Test
+    void httpBodyCachingFilter_shouldBeCreated_whenTraceHttpDetailsEnabled() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withPropertyValues("embabel.observability.trace-http-details=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(HttpBodyCachingFilter.class);
+                });
+    }
+
+    @Test
+    void httpRequestObservationFilter_shouldNotBeCreated_byDefault() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(HttpRequestObservationFilter.class);
+                });
+    }
+
+    @Test
+    void httpRequestObservationFilter_shouldBeCreated_whenTraceHttpDetailsEnabled() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withPropertyValues("embabel.observability.trace-http-details=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(HttpRequestObservationFilter.class);
+                });
+    }
+
     @Configuration
     static class OpenTelemetryConfig {
         @Bean
