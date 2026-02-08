@@ -36,6 +36,13 @@
             <artifactId>micrometer-tracing</artifactId>
         </dependency>
 
+        <!-- AspectJ for @Tracked aspect (ProceedingJoinPoint, @Aspect, @Around) -->
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjweaver</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- OpenTelemetry API (Tracer, Span, Context, Scope) -->
         <dependency>
             <groupId>io.opentelemetry</groupId>

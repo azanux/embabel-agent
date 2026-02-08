@@ -141,4 +141,5 @@ public class ObservabilityAutoConfiguration {
         log.debug("Configuring ChatModel observation filter for LLM call tracing");
         return new ChatModelObservationFilter(properties.getMaxAttributeLength());
     }
+
 }

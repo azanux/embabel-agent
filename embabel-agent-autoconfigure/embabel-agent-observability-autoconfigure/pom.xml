@@ -39,6 +39,13 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Spring AOP for @Tracked aspect support -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Micrometer Tracing Bridge to OpenTelemetry (OtelTracer, OtelCurrentTraceContext) -->
         <dependency>
             <groupId>io.micrometer</groupId>

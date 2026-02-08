@@ -52,7 +52,9 @@ public class EmbabelObservationContext extends Observation.Context {
         /** Ranking/selection event. */
         RANKING,
         /** Dynamic agent creation event. */
-        DYNAMIC_AGENT_CREATION
+        DYNAMIC_AGENT_CREATION,
+        /** Custom user-defined tracked operation. */
+        CUSTOM
     }
 
     private final boolean root;
@@ -218,6 +220,17 @@ public class EmbabelObservationContext extends Observation.Context {
      */
     public static EmbabelObservationContext rag(String runId, String ragName) {
         return new EmbabelObservationContext(false, runId, ragName, EventType.RAG, null);
+    }
+
+    /**
+     * Creates context for a custom tracked operation.
+     *
+     * @param runId unique run identifier, or empty if outside an agent process
+     * @param name  name of the tracked operation
+     * @return the observation context
+     */
+    public static EmbabelObservationContext custom(String runId, String name) {
+        return new EmbabelObservationContext(false, runId, name, EventType.CUSTOM, null);
     }
 
     /**

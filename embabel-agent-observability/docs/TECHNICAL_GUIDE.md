@@ -60,6 +60,9 @@ embabel-agent-observability/
     |   |   +-- ObservabilityAutoConfiguration.java    # Main auto-config
     |   |   +-- MicrometerTracingAutoConfiguration.java # Micrometer config
     |   |   +-- OpenTelemetrySdkAutoConfiguration.java # OpenTelemetry config
+    |   |   +-- annotation/
+    |   |   |   +-- Tracked.java                            # @Tracked annotation
+    |   |   |   +-- TrackType.java                          # Track type enum
     |   |   +-- observation/
     |   |       +-- EmbabelObservationContext.java         # Custom context
     |   |       +-- EmbabelFullObservationEventListener.java    # SPRING_OBSERVATION impl
@@ -68,6 +71,7 @@ embabel-agent-observability/
     |   |       +-- EmbabelTracingObservationHandler.java      # Custom handler
     |   |       +-- NonEmbabelTracingObservationHandler.java   # Default handler override
     |   |       +-- ChatModelObservationFilter.java            # Spring AI filter
+    |   |       +-- TrackedAspect.java                         # @Tracked aspect
     |   +-- resources/META-INF/spring/
     |       +-- org.springframework.boot.autoconfigure.AutoConfiguration.imports
     +-- test/
@@ -79,6 +83,7 @@ embabel-agent-observability/
                 +-- EmbabelObservationEventListenerTest.java
                 +-- EmbabelSpringObservationEventListenerTest.java
                 +-- EmbabelTracingObservationHandlerTest.java
+                +-- TrackedAspectTest.java
                 +-- SpringObservationProofOfConceptTest.java
 ```
 
@@ -409,6 +414,7 @@ Scope scope = span.makeCurrent();
 |------|-----------|-------------|
 | `embabelObservationEventListener` | `trace-agent-events=true` | Embabel event listener |
 | `chatModelObservationFilter` | `trace-llm-calls=true` | Filter for Spring AI |
+| `trackedAspect` | AspectJ on classpath | `@Tracked` annotation support (via `TrackedAspectAutoConfiguration`) |
 
 #### Selection Logic
 
@@ -515,7 +521,13 @@ public enum EventType {
     TOOL_CALL,          // Tool call
     PLANNING,           // Planning event
     STATE_TRANSITION,   // State transition
-    LIFECYCLE           // Lifecycle state (WAITING, PAUSED, STUCK)
+    LIFECYCLE,          // Lifecycle state (WAITING, PAUSED, STUCK)
+    LLM_CALL,           // LLM call
+    TOOL_LOOP,          // Tool loop execution
+    RAG,                // RAG event
+    RANKING,            // Ranking/selection event
+    DYNAMIC_AGENT_CREATION, // Dynamic agent creation
+    CUSTOM              // Custom user-defined tracked operation (@Tracked)
 }
 ```
 
@@ -531,6 +543,12 @@ public enum EventType {
 | `planning(runId, planningName)` | Planning |
 | `stateTransition(runId, stateName)` | Transition |
 | `lifecycle(runId, lifecycleState)` | Lifecycle |
+| `llmCall(runId, llmName)` | LLM call |
+| `toolLoop(runId, toolLoopName)` | Tool loop |
+| `rag(runId, ragName)` | RAG event |
+| `ranking(rankingName)` | Ranking |
+| `dynamicAgentCreation(agentName)` | Dynamic agent creation |
+| `custom(runId, name)` | Custom tracked operation |
 
 ---
 
@@ -569,6 +587,7 @@ private Span resolveParentSpan(EmbabelObservationContext context) {
         case PLANNING:
         case STATE_TRANSITION:
         case LIFECYCLE:
+        case CUSTOM:
             // Children of current action, or agent otherwise
             Span actionSpan = activeActionSpans.get(runId);
             return actionSpan != null ? actionSpan : activeAgentSpans.get(runId);
@@ -609,6 +628,103 @@ private String extractPrompt(ChatModelObservationContext chatContext) {
     }
     return sb.toString();
 }
+```
+
+---
+
+### 6.7 @Tracked Annotation and TrackedAspect
+
+**Files**:
+- `src/main/java/com/embabel/agent/observability/annotation/Tracked.java`
+- `src/main/java/com/embabel/agent/observability/annotation/TrackType.java`
+- `src/main/java/com/embabel/agent/observability/observation/TrackedAspect.java`
+
+**Role**: Allows developers to add custom observability spans to any method with zero boilerplate.
+
+#### @Tracked Annotation
+
+```java
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.RUNTIME)
+public @interface Tracked {
+    String value() default "";              // Operation name (defaults to method name)
+    TrackType type() default TrackType.CUSTOM;  // Operation classification
+    String description() default "";        // Optional description
+}
+```
+
+#### TrackType Enum
+
+```java
+public enum TrackType {
+    CUSTOM,           // General-purpose (default)
+    PROCESSING,       // Data processing
+    VALIDATION,       // Validation/verification
+    TRANSFORMATION,   // Data transformation
+    EXTERNAL_CALL,    // External service/API call
+    COMPUTATION       // Computation/calculation
+}
+```
+
+#### TrackedAspect
+
+An `@Aspect` that intercepts `@Tracked`-annotated methods via `@Around("@annotation(tracked)")`.
+
+**How It Works:**
+
+1. Resolves the operation name from annotation `value()` or method name
+2. Checks `AgentProcess.get()` for current agent context (runId, agent name)
+3. Creates `EmbabelObservationContext.custom(runId, operationName)`
+4. Creates observation via `Observation.createNotStarted(name, contextSupplier, registry)`
+5. Tags low-cardinality: `type`, `class`, `description` (if present), `agent` (if in agent context)
+6. Tags high-cardinality: `args` (truncated to 256 chars), `result` (truncated to 256 chars)
+7. Opens scope, proceeds, captures result or error, closes scope, stops observation
+
+#### Captured Span Attributes
+
+| Attribute | Cardinality | Description |
+|-----------|-------------|-------------|
+| `embabel.tracked.type` | Low | TrackType enum name |
+| `embabel.tracked.class` | Low | Declaring class simple name |
+| `embabel.tracked.description` | Low | Description (if non-empty) |
+| `embabel.tracked.agent` | Low | Agent name (if inside AgentProcess) |
+| `embabel.tracked.args` | High | Method arguments (truncated) |
+| `embabel.tracked.result` | High | Return value (truncated) |
+
+#### Usage Examples
+
+```java
+// Simple tracking - uses method name as operation name
+@Tracked
+public Customer enrichCustomer(Customer input) { ... }
+
+// Named with type classification
+@Tracked(value = "callPaymentGateway", type = TrackType.EXTERNAL_CALL)
+public PaymentResult charge(Order order) { ... }
+
+// With description
+@Tracked(value = "validateAddress", type = TrackType.VALIDATION,
+         description = "Validates shipping address with USPS API")
+public boolean validate(Address addr) { ... }
+```
+
+#### Parent Resolution
+
+`CUSTOM` spans follow the same parent resolution as `GOAL`, `PLANNING`, `STATE_TRANSITION`, and `LIFECYCLE`:
+- Parent is the current **ACTION** span if one is active
+- Falls back to the **AGENT** span otherwise
+- If no agent context exists (called outside an agent), uses thread-local tracer context
+
+#### Auto-Configuration
+
+The `TrackedAspect` bean is registered via `TrackedAspectAutoConfiguration`, a separate auto-configuration class that is only loaded when AspectJ is on the classpath (`@ConditionalOnClass(name = "org.aspectj.lang.ProceedingJoinPoint")`). This prevents `NoClassDefFoundError` when the observability starter is used without AOP support.
+
+**Required dependency** (included in `embabel-agent-starter-observability`):
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-aop</artifactId>
+</dependency>
 ```
 
 ---
@@ -1527,5 +1643,6 @@ This project is a **sophisticated observability library** that:
 6. **[OK] Supports multiple exporters** (Langfuse, Zipkin, OTLP, custom)
 7. **[OK] Highly configurable** (7 on/off event categories)
 8. **[OK] Production-ready** (Spring Boot auto-configuration, thread-safe)
+9. **[OK] Custom operation tracking** (`@Tracked` annotation with automatic span creation)
 
 **Recommendation**: Use `SPRING_OBSERVATION` to benefit from both **traces** and automatic **metrics**.

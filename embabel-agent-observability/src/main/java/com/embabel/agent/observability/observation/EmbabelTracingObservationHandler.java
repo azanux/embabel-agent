@@ -254,6 +254,7 @@ public class EmbabelTracingObservationHandler
             case PLANNING:
             case STATE_TRANSITION:
             case LIFECYCLE:
+            case CUSTOM:
                 Span actionSpan = activeActionSpans.get(runId);
                 if (actionSpan != null) {
                     return actionSpan;

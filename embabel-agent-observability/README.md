@@ -201,6 +201,7 @@ Your agents are now fully traced. No code changes required.
 | **Lifecycle States** | Visibility into WAITING, PAUSED, STUCK states |
 | **Multi-Exporter Support** | Send traces to multiple backends simultaneously |
 | **Automatic Metrics** | Duration and count metrics (Spring Observation mode) |
+| **`@Tracked` Annotation** | Custom operation tracking with automatic span creation |
 
 ### Coming Soon
 
@@ -324,6 +325,63 @@ Agent: CustomerServiceAgent (trace root)
 │   └── ChatModel: gpt-4 (Spring AI)
 ├── goal:achieved [RequestProcessed]
 └── status: completed [duration=2340ms]
+```
+
+---
+
+## Custom Operation Tracking with `@Tracked`
+
+For tracking custom operations in your agent code, use the `@Tracked` annotation. It automatically creates observability spans capturing inputs, outputs, duration, and errors.
+
+### Basic Usage
+
+```java
+@Tracked("enrichCustomer")
+public Customer enrich(Customer input) {
+    // Your logic here
+}
+```
+
+### With Type and Description
+
+```java
+@Tracked(value = "callPaymentApi", type = TrackType.EXTERNAL_CALL, description = "Payment gateway call")
+public PaymentResult processPayment(Order order) {
+    // ...
+}
+```
+
+### Available Track Types
+
+| Type | Description |
+|------|-------------|
+| `CUSTOM` | General-purpose (default) |
+| `PROCESSING` | Data processing operation |
+| `VALIDATION` | Validation or verification step |
+| `TRANSFORMATION` | Data transformation |
+| `EXTERNAL_CALL` | External service/API call |
+| `COMPUTATION` | Computation or calculation |
+
+### What Gets Captured
+
+- **Operation name** (from `value` or method name)
+- **Method arguments** (truncated to 256 chars)
+- **Return value** (truncated to 256 chars)
+- **Duration** (automatic)
+- **Errors** (automatic, with stack trace)
+- **Agent context** (runId, agent name — when inside an agent process)
+
+### Trace Hierarchy
+
+When `@Tracked` methods are called within an agent execution, spans are automatically nested under the current action or agent span:
+
+```
+Agent: CustomerServiceAgent
+├── Action: ProcessOrder
+│   ├── @Tracked: enrichCustomer (PROCESSING)
+│   ├── ChatModel: gpt-4
+│   └── @Tracked: callPaymentApi (EXTERNAL_CALL)
+└── status: completed
 ```
 
 ---
