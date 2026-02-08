@@ -384,6 +384,59 @@ Agent: CustomerServiceAgent
 └── status: completed
 ```
 
+### Important: Spring AOP Proxy Limitation
+
+`@Tracked` uses Spring AOP, which is proxy-based. This means **internal method calls within the same class are not intercepted**:
+
+```java
+@Component
+public class MyService {
+
+    @Tracked("step1")
+    public String step1() { return "ok"; }
+
+    public void process() {
+        step1(); // this.step1() — bypasses the proxy, @Tracked NOT triggered!
+    }
+}
+```
+
+**Workarounds** (from simplest to most complete):
+
+**1. Extract to a separate bean (recommended):**
+```java
+@Component
+public class MyService {
+    private final MyTrackedOps ops; // injected by Spring
+
+    public void process() {
+        ops.step1(); // goes through the proxy — @Tracked works!
+    }
+}
+
+@Component
+public class MyTrackedOps {
+    @Tracked("step1")
+    public String step1() { return "ok"; }
+}
+```
+
+**2. Self-injection:**
+```java
+@Component
+public class MyService {
+    @Autowired
+    private MyService self; // Spring injects the proxy, not this
+
+    public void process() {
+        self.step1(); // goes through the proxy — @Tracked works!
+    }
+
+    @Tracked("step1")
+    public String step1() { return "ok"; }
+}
+```
+
 ---
 
 ## Roadmap

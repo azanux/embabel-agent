@@ -727,6 +727,57 @@ The `TrackedAspect` bean is registered via `TrackedAspectAutoConfiguration`, a s
 </dependency>
 ```
 
+#### Spring AOP Proxy Limitation
+
+`@Tracked` relies on Spring AOP, which is **proxy-based**. This has an important consequence: **self-invocations** (calling a `@Tracked` method from another method in the same class via `this`) **bypass the proxy** and the aspect is never triggered.
+
+```
+External call:   OtherBean ──► Proxy ──► TrackedAspect ──► your method    ✅ Works
+Self-invocation: this.method() ──────────────────────► your method         ❌ Bypasses proxy
+```
+
+**Example of the problem:**
+
+```java
+@Component
+public class MyService {
+    @Tracked("step1")
+    public String step1() { return "ok"; }
+
+    public void process() {
+        step1();  // this.step1() — bypasses the proxy, @Tracked NOT triggered!
+    }
+}
+```
+
+**Workarounds:**
+
+| Solution | Description | Trade-off |
+|----------|-------------|-----------|
+| **Separate bean** (recommended) | Extract `@Tracked` methods to a dedicated `@Component` injected via Spring | Clean separation, no coupling |
+| **Self-injection** | `@Autowired private MyService self;` then call `self.step1()` | Simple, slightly unusual pattern |
+| **`AopContext.currentProxy()`** | `((MyService) AopContext.currentProxy()).step1()` (requires `@EnableAspectJAutoProxy(exposeProxy = true)`) | Couples code to Spring AOP internals |
+| **AspectJ LTW** | Load-time weaving with `-javaagent:aspectjweaver.jar` — modifies bytecode directly, no proxy needed | True solution, but complex setup |
+
+**Recommended approach — separate bean:**
+
+```java
+@Component
+public class MyTrackedOps {
+    @Tracked("step1")
+    public String step1() { return "ok"; }
+}
+
+@Component
+public class MyService {
+    private final MyTrackedOps ops; // injected by Spring
+
+    public void process() {
+        ops.step1();  // goes through the proxy — @Tracked works!
+    }
+}
+```
+
 ---
 
 ## 7. Integration with Spring AI
