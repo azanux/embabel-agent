@@ -15,14 +15,15 @@
  */
 package com.embabel.agent.api.tool.agentic.playbook
 
+import com.embabel.agent.api.common.ExecutingOperationContext
 import com.embabel.agent.api.tool.Tool
 import com.embabel.agent.api.tool.agentic.AgenticSystemPromptCreator
 import com.embabel.agent.api.tool.agentic.AgenticTool
 import com.embabel.agent.api.tool.agentic.AgenticToolSupport
 import com.embabel.agent.api.tool.agentic.DomainToolFactory
+import com.embabel.agent.api.tool.agentic.DomainToolPredicate
 import com.embabel.agent.api.tool.agentic.DomainToolSource
 import com.embabel.agent.api.tool.agentic.DomainToolTracker
-import com.embabel.agent.core.AgentProcess
 import com.embabel.agent.spi.config.spring.executingOperationContextFor
 import com.embabel.common.ai.model.LlmOptions
 import com.embabel.common.util.loggerFor
@@ -59,10 +60,10 @@ import com.embabel.common.util.loggerFor
  *
  * @param definition Tool definition (name, description, input schema)
  * @param metadata Optional tool metadata
- * @param llm LLM to use for orchestration
+ * @param llm LLM to use for orchestration. It is good practice to provide
  * @param unlockedTools Tools that are always available
  * @param lockedTools Tools with unlock conditions
- * @param systemPromptCreator Create prompt for the LLM to use
+ * @param systemPromptCreator Create prompt for the LLM to use, given context and input
  * @param maxIterations Maximum number of tool loop iterations
  */
 data class PlaybookTool internal constructor(
@@ -72,9 +73,12 @@ data class PlaybookTool internal constructor(
     internal val unlockedTools: List<Tool> = emptyList(),
     internal val lockedTools: List<LockedTool> = emptyList(),
     internal val domainToolSources: List<DomainToolSource<*>> = emptyList(),
-    val systemPromptCreator: AgenticSystemPromptCreator = { defaultSystemPrompt(definition.description) },
+    internal val autoDiscovery: Boolean = false,
+    val systemPromptCreator: AgenticSystemPromptCreator = AgenticSystemPromptCreator { _, _ ->
+        defaultSystemPrompt(definition.description)
+    },
     override val maxIterations: Int = AgenticTool.DEFAULT_MAX_ITERATIONS,
-) : AgenticTool {
+) : AgenticTool<PlaybookTool> {
 
     /**
      * A tool with its unlock condition.
@@ -110,7 +114,7 @@ data class PlaybookTool internal constructor(
 
     override fun call(input: String): Tool.Result {
         val allStaticTools = unlockedTools + lockedTools.map { it.tool }
-        if (allStaticTools.isEmpty() && domainToolSources.isEmpty()) {
+        if (allStaticTools.isEmpty() && domainToolSources.isEmpty() && !autoDiscovery) {
             loggerFor<PlaybookTool>().warn(
                 "No tools available for PlaybookTool '{}'",
                 definition.name,
@@ -124,18 +128,24 @@ data class PlaybookTool internal constructor(
         )
         if (errorResult != null) return errorResult
 
-        val systemPrompt = systemPromptCreator(agentProcess!!)
+        val executingContext = executingOperationContextFor(agentProcess!!)
+        val systemPrompt = systemPromptCreator.apply(executingContext, input)
         loggerFor<PlaybookTool>().info(
-            "Executing PlaybookTool '{}' with {} unlocked tools, {} locked tools, and {} domain sources",
+            "Executing PlaybookTool '{}' with {} unlocked tools, {} locked tools, {} domain sources, autoDiscovery={}",
             definition.name,
             unlockedTools.size,
             lockedTools.size,
             domainToolSources.size,
+            autoDiscovery,
         )
 
-        // Create domain tool tracker if we have domain sources
-        val domainToolTracker = if (domainToolSources.isNotEmpty()) {
-            DomainToolTracker(domainToolSources)
+        // Create domain tool tracker if we have domain sources or auto-discovery is enabled
+        val domainToolTracker = if (domainToolSources.isNotEmpty() || autoDiscovery) {
+            DomainToolTracker(
+                sources = domainToolSources,
+                autoDiscovery = autoDiscovery,
+                agentProcess = agentProcess,
+            )
         } else {
             null
         }
@@ -162,7 +172,7 @@ data class PlaybookTool internal constructor(
 
         val allWrappedTools = wrappedUnlockedTools + wrappedLockedTools + domainPlaceholderTools
 
-        val ai = executingOperationContextFor(agentProcess).ai()
+        val ai = executingContext.ai()
         val output = ai
             .withLlm(llm)
             .withId("playbook-tool-${definition.name}")
@@ -203,15 +213,8 @@ data class PlaybookTool internal constructor(
 
     override fun withLlm(llm: LlmOptions): PlaybookTool = copy(llm = llm)
 
-    override fun withSystemPrompt(prompt: String): PlaybookTool = copy(
-        systemPromptCreator = { prompt },
-    )
-
-    /**
-     * Create a copy with a custom system prompt creator.
-     */
-    fun withSystemPromptCreator(promptCreator: AgenticSystemPromptCreator): PlaybookTool = copy(
-        systemPromptCreator = promptCreator,
+    override fun withSystemPrompt(creator: AgenticSystemPromptCreator): PlaybookTool = copy(
+        systemPromptCreator = creator,
     )
 
     override fun withMaxIterations(maxIterations: Int): PlaybookTool = copy(
@@ -232,23 +235,28 @@ data class PlaybookTool internal constructor(
     }
 
     /**
-     * Register a domain class that can contribute @LlmTool methods when a single instance is retrieved.
+     * Register a domain class with a predicate to control when its @LlmTool methods are exposed.
      *
-     * When a single artifact of the specified type is returned by any tool, any @LlmTool annotated
-     * methods on that instance become available as tools.
-     *
-     * Example:
-     * ```kotlin
-     * PlaybookTool("userManager", "Manage users")
-     *     .withTools(searchUserTool, getUserTool)
-     *     .withDomainToolsFrom(User::class.java)  // User methods become available when a single User is retrieved
-     * ```
+     * When a single artifact of the specified type is returned by any tool and passes the predicate,
+     * any @LlmTool annotated methods on that instance become available as tools.
      *
      * @param type The domain class that may contribute tools
+     * @param predicate Predicate to filter which instances contribute tools
      */
-    fun <T : Any> withDomainToolsFrom(type: Class<T>): PlaybookTool = copy(
-        domainToolSources = domainToolSources + DomainToolSource(type),
+    override fun <T : Any> withDomainToolsFrom(
+        type: Class<T>,
+        predicate: DomainToolPredicate<T>,
+    ): PlaybookTool = copy(
+        domainToolSources = domainToolSources + DomainToolSource(type, predicate),
     )
+
+    /**
+     * Register a domain class with a predicate.
+     * Kotlin-friendly version using reified type parameter.
+     */
+    inline fun <reified T : Any> withDomainToolsFrom(
+        noinline predicate: (T, com.embabel.agent.core.AgentProcess?) -> Boolean,
+    ): PlaybookTool = withDomainToolsFrom(T::class.java, DomainToolPredicate(predicate))
 
     /**
      * Register a domain class that can contribute @LlmTool methods when a single instance is retrieved.
@@ -263,6 +271,8 @@ data class PlaybookTool internal constructor(
      */
     inline fun <reified T : Any> withDomainToolsFrom(): PlaybookTool =
         withDomainToolsFrom(T::class.java)
+
+    override fun withAnyDomainTools(): PlaybookTool = copy(autoDiscovery = true)
 
     companion object {
 

@@ -15,11 +15,16 @@
  */
 package com.embabel.agent.test.unit
 
-import com.embabel.agent.api.common.*
+import com.embabel.agent.api.common.AgentImage
+import com.embabel.agent.api.common.ContextualPromptElement
+import com.embabel.agent.api.common.InteractionId
+import com.embabel.agent.api.common.OperationContext
+import com.embabel.agent.api.common.PromptRunner
 import com.embabel.agent.api.common.support.DelegatingCreating
 import com.embabel.agent.api.common.support.DelegatingRendering
 import com.embabel.agent.api.common.support.PromptExecutionDelegate
 import com.embabel.agent.api.tool.Tool
+import com.embabel.agent.api.tool.ToolObject
 import com.embabel.agent.api.validation.guardrails.GuardRail
 import com.embabel.agent.core.ToolGroup
 import com.embabel.agent.core.ToolGroupRequirement
@@ -58,7 +63,7 @@ data class LlmInvocation(
      * The default toString() of Message objects truncates content for readability.
      */
     val prompt: String
-        get() = messages.joinToString("\n") { it.textContent }
+        get() = messages.joinToString("\n") { it.content }
 
     override fun toString(): String {
         return "LlmInvocation(id=${interaction.id}, method=$method, messageCount=${messages.size})"
