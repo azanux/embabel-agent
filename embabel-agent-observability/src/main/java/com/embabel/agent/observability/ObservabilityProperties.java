@@ -97,6 +97,9 @@ public class ObservabilityProperties {
     /** Trace HTTP request/response details including bodies, headers and params (disabled by default). */
     private boolean traceHttpDetails = false;
 
+    /** Enable @Tracked annotation aspect for custom operation tracking. */
+    private boolean traceTrackedOperations = true;
+
     // Getters and Setters
 
     /**
@@ -385,5 +388,21 @@ public class ObservabilityProperties {
      */
     public void setTraceHttpDetails(boolean traceHttpDetails) {
         this.traceHttpDetails = traceHttpDetails;
+    }
+
+    /**
+     * Returns whether @Tracked annotation tracing is enabled.
+     * @return true if @Tracked operations are traced
+     */
+    public boolean isTraceTrackedOperations() {
+        return traceTrackedOperations;
+    }
+
+    /**
+     * Sets whether to trace @Tracked annotated operations.
+     * @param traceTrackedOperations true to enable @Tracked aspect
+     */
+    public void setTraceTrackedOperations(boolean traceTrackedOperations) {
+        this.traceTrackedOperations = traceTrackedOperations;
     }
 }

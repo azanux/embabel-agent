@@ -242,6 +242,7 @@ Your agents are now fully traced. No code changes required.
 | `embabel.observability.trace-state-transitions` | `true` | Trace state transitions |
 | `embabel.observability.trace-lifecycle-states` | `true` | Trace WAITING/PAUSED/STUCK states |
 | `embabel.observability.trace-object-binding` | `false` | Trace object binding (verbose) |
+| `embabel.observability.trace-tracked-operations` | `true` | Enable/disable `@Tracked` annotation aspect |
 | `embabel.observability.max-attribute-length` | `4000` | Max attribute length |
 
 ### Tool Observability Note

@@ -224,6 +224,7 @@ embabel-agent-observability/
 | `trace-state-transitions` | boolean | `true` | Trace state transitions |
 | `trace-lifecycle-states` | boolean | `true` | Trace WAITING/PAUSED/STUCK |
 | `trace-object-binding` | boolean | `false` | Trace object binding (verbose) |
+| `trace-tracked-operations` | boolean | `true` | Enable/disable `@Tracked` annotation aspect |
 
 ### Implementation Types
 
@@ -268,6 +269,7 @@ embabel:
     trace-state-transitions: true
     trace-lifecycle-states: true
     trace-object-binding: false
+    trace-tracked-operations: true
     max-attribute-length: 4000
 ```
 
