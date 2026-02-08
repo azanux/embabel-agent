@@ -17,9 +17,13 @@ package com.embabel.agent.autoconfigure.observability;
 
 import com.embabel.agent.api.event.AgenticEventListener;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.agent.observability.metrics.EmbabelMetricsEventListener;
 import com.embabel.agent.observability.observation.ChatModelObservationFilter;
+import com.embabel.agent.observability.mdc.MdcPropagationEventListener;
 import com.embabel.agent.observability.observation.EmbabelObservationEventListener;
 import com.embabel.agent.observability.observation.EmbabelSpringObservationEventListener;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.tracing.Tracer;
 import io.opentelemetry.api.OpenTelemetry;
 import org.junit.jupiter.api.Test;
@@ -119,9 +123,7 @@ class ObservabilityAutoConfigurationTest {
                 .withUserConfiguration(OpenTelemetryConfig.class, TracerConfig.class)
                 .withPropertyValues("embabel.observability.implementation=MICROMETER_TRACING")
                 .run(context -> {
-                    assertThat(context).hasSingleBean(AgenticEventListener.class);
-                    assertThat(context.getBean(AgenticEventListener.class))
-                            .isInstanceOf(EmbabelSpringObservationEventListener.class);
+                    assertThat(context).hasSingleBean(EmbabelSpringObservationEventListener.class);
                 });
     }
 
@@ -131,9 +133,7 @@ class ObservabilityAutoConfigurationTest {
                 .withUserConfiguration(OpenTelemetryConfig.class, TracerConfig.class)
                 .withPropertyValues("embabel.observability.implementation=OPENTELEMETRY_DIRECT")
                 .run(context -> {
-                    assertThat(context).hasSingleBean(AgenticEventListener.class);
-                    assertThat(context.getBean(AgenticEventListener.class))
-                            .isInstanceOf(EmbabelObservationEventListener.class);
+                    assertThat(context).hasSingleBean(EmbabelObservationEventListener.class);
                 });
     }
 
@@ -143,9 +143,26 @@ class ObservabilityAutoConfigurationTest {
                 .withUserConfiguration(OpenTelemetryConfig.class)
                 .withPropertyValues("embabel.observability.implementation=MICROMETER_TRACING")
                 .run(context -> {
-                    assertThat(context).hasSingleBean(AgenticEventListener.class);
-                    assertThat(context.getBean(AgenticEventListener.class))
-                            .isInstanceOf(EmbabelObservationEventListener.class);
+                    assertThat(context).hasSingleBean(EmbabelObservationEventListener.class);
+                });
+    }
+
+    @Test
+    void mdcPropagationListener_shouldBeCreated_byDefault() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(MdcPropagationEventListener.class);
+                });
+    }
+
+    @Test
+    void mdcPropagationListener_shouldNotBeCreated_whenDisabled() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withPropertyValues("embabel.observability.mdc-propagation=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(MdcPropagationEventListener.class);
                 });
     }
 
@@ -187,6 +204,34 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
+    @Test
+    void metricsListener_shouldBeCreated_whenMeterRegistryAvailable() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class, MeterRegistryConfig.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(EmbabelMetricsEventListener.class);
+                });
+    }
+
+    @Test
+    void metricsListener_shouldNotBeCreated_whenMetricsDisabled() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class, MeterRegistryConfig.class)
+                .withPropertyValues("embabel.observability.metrics-enabled=false")
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EmbabelMetricsEventListener.class);
+                });
+    }
+
+    @Test
+    void metricsListener_shouldNotBeCreated_whenNoMeterRegistry() {
+        contextRunner
+                .withUserConfiguration(OpenTelemetryConfig.class)
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EmbabelMetricsEventListener.class);
+                });
+    }
+
     @Configuration
     static class OpenTelemetryConfig {
         @Bean
@@ -200,6 +245,14 @@ class ObservabilityAutoConfigurationTest {
         @Bean
         Tracer tracer() {
             return mock(Tracer.class);
+        }
+    }
+
+    @Configuration
+    static class MeterRegistryConfig {
+        @Bean
+        MeterRegistry meterRegistry() {
+            return new SimpleMeterRegistry();
         }
     }
 }

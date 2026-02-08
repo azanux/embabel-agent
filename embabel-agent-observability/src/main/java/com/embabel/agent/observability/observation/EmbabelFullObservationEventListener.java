@@ -106,7 +106,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
                 if (properties.isTraceLifecycleStates()) onLifecycleState(e, "PAUSED");
             }
             case AgentProcessStuckEvent e -> {
-                if (properties.isTraceLifecycleStates()) onLifecycleState(e, "STUCK");
+                if (properties.isTraceLifecycleStates()) onStuck(e);
             }
             case ToolLoopStartEvent e -> {
                 if (properties.isTraceToolLoop()) onToolLoopStart(e);
@@ -122,6 +122,9 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             }
             case AgentProcessRagEvent e -> {
                 if (properties.isTraceRag()) onRagEvent(e);
+            }
+            case ReplanRequestedEvent e -> {
+                if (properties.isTracePlanning()) onReplanRequested(e);
             }
             case ProcessKilledEvent e -> onProcessKilled(e);
             default -> {}
@@ -327,6 +330,10 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             Object lastResult = process.getBlackboard().lastResult();
             if (lastResult != null) {
                 ctx.observation.highCardinalityKeyValue("embabel.action.result", truncate(lastResult.toString()));
+            }
+
+            if ("FAILED".equals(statusName)) {
+                ctx.observation.error(new RuntimeException("Action failed: " + actionName));
             }
 
             ctx.scope.close();
@@ -652,6 +659,24 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         log.debug("Recorded plan formulated event (iteration: {}, runId: {})", iteration, runId);
     }
 
+    private void onReplanRequested(ReplanRequestedEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        EmbabelObservationContext context = EmbabelObservationContext.planning(runId, "planning:replan_requested");
+
+        Observation observation = Observation.createNotStarted("planning:replan_requested", () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.event.type", "replan_requested");
+        observation.highCardinalityKeyValue("embabel.agent.run_id", runId);
+        observation.highCardinalityKeyValue("embabel.replan.reason", truncate(event.getReason()));
+
+        observation.start();
+        observation.stop();
+
+        log.debug("Recorded replan requested event (runId: {}, reason: {})", runId, event.getReason());
+    }
+
     // --- State Transitions ---
 
     /** Records an instant observation when the agent transitions to a new state. */
@@ -704,6 +729,30 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.stop();
 
         log.debug("Recorded lifecycle state: {} (runId: {})", state, runId);
+    }
+
+    private void onStuck(AgentProcessStuckEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        EmbabelObservationContext context = EmbabelObservationContext.lifecycle(runId, "lifecycle:stuck");
+
+        Observation observation = Observation.createNotStarted("lifecycle:stuck", () -> context, observationRegistry);
+
+        observation.lowCardinalityKeyValue("embabel.lifecycle.state", "STUCK");
+        observation.highCardinalityKeyValue("embabel.agent.run_id", runId);
+        observation.highCardinalityKeyValue("embabel.event.type", "lifecycle_stuck");
+
+        String snapshot = getBlackboardSnapshot(process);
+        if (!snapshot.isEmpty()) {
+            observation.highCardinalityKeyValue("input.value", truncate(snapshot));
+        }
+
+        observation.start();
+        observation.error(new RuntimeException("Agent process is stuck"));
+        observation.stop();
+
+        log.debug("Recorded lifecycle state: STUCK (runId: {})", runId);
     }
 
     // --- Tool Loop ---
@@ -858,9 +907,14 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         if (ctx != null) {
             ctx.observation.highCardinalityKeyValue("embabel.llm.duration_ms",
                     String.valueOf(event.getRunningTime().toMillis()));
-            if (event.getResponse() != null) {
+            Object response = event.getResponse();
+            if (response != null) {
                 ctx.observation.highCardinalityKeyValue("embabel.llm.output_type",
-                        event.getResponse().getClass().getSimpleName());
+                        response.getClass().getSimpleName());
+            }
+
+            if (response instanceof Throwable error) {
+                ctx.observation.error(error);
             }
 
             ctx.scope.close();

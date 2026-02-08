@@ -281,6 +281,30 @@ class EmbabelFullObservationEventListenerTest {
                 .isEqualTo("SUCCESS");
     }
 
+    @Test
+    @DisplayName("Failed action should set ERROR status on span")
+    void actionExecutionResultEvent_shouldSetErrorStatus_whenFailed() {
+        AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+        ActionExecutionStartEvent startEvent = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+        ActionExecutionResultEvent resultEvent = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+
+        listener.onProcessEvent(new AgentProcessCreationEvent(process));
+        listener.onProcessEvent(startEvent);
+        listener.onProcessEvent(resultEvent);
+        listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+        List<SpanData> spans = spanExporter.getFinishedSpanItems();
+        SpanData actionSpan = spans.stream()
+                .filter(s -> s.getName().equals("MyAction"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(actionSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("embabel.action.status")))
+                .isEqualTo("FAILED");
+        assertThat(actionSpan.getStatus().getStatusCode())
+                .isEqualTo(io.opentelemetry.api.trace.StatusCode.ERROR);
+    }
+
     // --- Tool Call Tests ---
 
     @Test
@@ -422,6 +446,26 @@ class EmbabelFullObservationEventListenerTest {
     }
 
     @Test
+    @DisplayName("ReplanRequestedEvent should create span with reason when planning tracing enabled")
+    void replanRequested_shouldCreateSpan_whenEnabled() {
+        properties.setTracePlanning(true);
+        AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+
+        listener.onProcessEvent(new AgentProcessCreationEvent(process));
+        listener.onProcessEvent(new ReplanRequestedEvent(process, "Tool loop detected issue"));
+        listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+        List<SpanData> spans = spanExporter.getFinishedSpanItems();
+        SpanData replanSpan = spans.stream()
+                .filter(s -> s.getName().equals("planning:replan_requested"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(replanSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("embabel.replan.reason")))
+                .isEqualTo("Tool loop detected issue");
+    }
+
+    @Test
     @DisplayName("Planning events should not be traced when disabled")
     void planningEvents_shouldNotBeTraced_whenDisabled() {
         // Setup: disable planning tracing
@@ -553,6 +597,27 @@ class EmbabelFullObservationEventListenerTest {
     }
 
     @Test
+    @DisplayName("AgentProcessStuckEvent should create span with ERROR status")
+    void stuckEvent_shouldCreateSpan_withErrorStatus() {
+        properties.setTraceLifecycleStates(true);
+        AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+        AgentProcessStuckEvent event = new AgentProcessStuckEvent(process);
+
+        listener.onProcessEvent(new AgentProcessCreationEvent(process));
+        listener.onProcessEvent(event);
+        listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+        List<SpanData> spans = spanExporter.getFinishedSpanItems();
+        SpanData stuckSpan = spans.stream()
+                .filter(s -> s.getName().equals("lifecycle:stuck"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(stuckSpan.getStatus().getStatusCode())
+                .isEqualTo(io.opentelemetry.api.trace.StatusCode.ERROR);
+    }
+
+    @Test
     @DisplayName("Lifecycle events should not be traced when disabled")
     void lifecycleEvents_shouldNotBeTraced_whenDisabled() {
         // Setup: disable lifecycle tracing
@@ -634,6 +699,33 @@ class EmbabelFullObservationEventListenerTest {
                 .isEqualTo("0.9");
         assertThat(llmSpan.getAttributes().get(io.opentelemetry.api.common.AttributeKey.stringKey("gen_ai.provider.name")))
                 .isEqualTo("openai");
+    }
+
+    @Test
+    @DisplayName("LLM span should set ERROR when response is a Throwable")
+    void llmSpan_shouldSetErrorStatus_whenResponseIsThrowable() {
+        properties.setTraceLlmCalls(true);
+        AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+        ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+        LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", Object.class);
+        LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, new RuntimeException("LLM call failed"));
+        ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+
+        listener.onProcessEvent(new AgentProcessCreationEvent(process));
+        listener.onProcessEvent(actionStart);
+        listener.onProcessEvent(llmRequest);
+        listener.onProcessEvent(llmResponse);
+        listener.onProcessEvent(actionResult);
+        listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+        List<SpanData> spans = spanExporter.getFinishedSpanItems();
+        SpanData llmSpan = spans.stream()
+                .filter(s -> s.getName().equals("llm:gpt-4"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(llmSpan.getStatus().getStatusCode())
+                .isEqualTo(io.opentelemetry.api.trace.StatusCode.ERROR);
     }
 
     // --- Helper Methods ---

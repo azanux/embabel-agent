@@ -138,7 +138,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
                 if (properties.isTraceLifecycleStates()) onLifecycleState(e, "PAUSED");
             }
             case AgentProcessStuckEvent e -> {
-                if (properties.isTraceLifecycleStates()) onLifecycleState(e, "STUCK");
+                if (properties.isTraceLifecycleStates()) onStuck(e);
             }
             case ObjectAddedEvent e -> {
                 if (properties.isTraceObjectBinding()) onObjectAdded(e);
@@ -160,6 +160,9 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             }
             case AgentProcessRagEvent e -> {
                 if (properties.isTraceRag()) onRagEvent(e);
+            }
+            case ReplanRequestedEvent e -> {
+                if (properties.isTracePlanning()) onReplanRequested(e);
             }
             case ProcessKilledEvent e -> onProcessKilled(e);
             default -> {}
@@ -396,6 +399,10 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             Object lastResult = process.getBlackboard().lastResult();
             if (lastResult != null) {
                 ctx.span.tag("embabel.action.result", truncate(lastResult.toString()));
+            }
+
+            if ("FAILED".equals(statusName)) {
+                ctx.span.error(new RuntimeException("Action failed: " + actionName));
             }
 
             ctx.scope.close();
@@ -744,6 +751,29 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         log.debug("Recorded plan formulated event (iteration: {}, runId: {})", iteration, runId);
     }
 
+    private void onReplanRequested(ReplanRequestedEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+
+        Span span;
+        if (parentCtx != null) {
+            span = tracer.nextSpan(parentCtx.span).name("planning:replan_requested");
+        } else {
+            span = tracer.nextSpan().name("planning:replan_requested");
+        }
+
+        span.tag("embabel.event.type", "replan_requested");
+        span.tag("embabel.agent.run_id", runId);
+        span.tag("embabel.replan.reason", truncate(event.getReason()));
+
+        span.start();
+        span.end();
+
+        log.debug("Recorded replan requested event (runId: {}, reason: {})", runId, event.getReason());
+    }
+
     // ==================== State Transitions ====================
 
     /**
@@ -810,6 +840,35 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.end();
 
         log.debug("Recorded lifecycle state: {} (runId: {})", state, runId);
+    }
+
+    private void onStuck(AgentProcessStuckEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+
+        Span span;
+        if (parentCtx != null) {
+            span = tracer.nextSpan(parentCtx.span).name("lifecycle:stuck");
+        } else {
+            span = tracer.nextSpan().name("lifecycle:stuck");
+        }
+
+        span.tag("embabel.event.type", "lifecycle_stuck");
+        span.tag("embabel.agent.run_id", runId);
+        span.tag("embabel.lifecycle.state", "STUCK");
+
+        String snapshot = getBlackboardSnapshot(process);
+        if (!snapshot.isEmpty()) {
+            span.tag("input.value", truncate(snapshot));
+        }
+
+        span.start();
+        span.error(new RuntimeException("Agent process is stuck"));
+        span.end();
+
+        log.debug("Recorded lifecycle state: STUCK (runId: {})", runId);
     }
 
     // ==================== Object Binding ====================
@@ -1031,8 +1090,13 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
 
         if (ctx != null) {
             ctx.span.tag("embabel.llm.duration_ms", String.valueOf(event.getRunningTime().toMillis()));
-            if (event.getResponse() != null) {
-                ctx.span.tag("embabel.llm.output_type", event.getResponse().getClass().getSimpleName());
+            Object response = event.getResponse();
+            if (response != null) {
+                ctx.span.tag("embabel.llm.output_type", response.getClass().getSimpleName());
+            }
+
+            if (response instanceof Throwable error) {
+                ctx.span.error(error);
             }
 
             ctx.scope.close();

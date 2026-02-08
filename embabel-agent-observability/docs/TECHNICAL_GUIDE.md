@@ -72,6 +72,10 @@ embabel-agent-observability/
     |   |       +-- NonEmbabelTracingObservationHandler.java   # Default handler override
     |   |       +-- ChatModelObservationFilter.java            # Spring AI filter
     |   |       +-- TrackedAspect.java                         # @Tracked aspect
+    |   |   +-- mdc/
+    |   |   |   +-- MdcPropagationEventListener.java             # SLF4J MDC propagation
+    |   |   +-- metrics/
+    |   |       +-- EmbabelMetricsEventListener.java             # Micrometer business metrics
     |   +-- resources/META-INF/spring/
     |       +-- org.springframework.boot.autoconfigure.AutoConfiguration.imports
     +-- test/
@@ -79,12 +83,16 @@ embabel-agent-observability/
             +-- ObservabilityPropertiesTest.java
             +-- ObservabilityAutoConfigurationTest.java
             +-- observation/
-                +-- ChatModelObservationFilterTest.java
-                +-- EmbabelObservationEventListenerTest.java
-                +-- EmbabelSpringObservationEventListenerTest.java
-                +-- EmbabelTracingObservationHandlerTest.java
-                +-- TrackedAspectTest.java
-                +-- SpringObservationProofOfConceptTest.java
+            |   +-- ChatModelObservationFilterTest.java
+            |   +-- EmbabelObservationEventListenerTest.java
+            |   +-- EmbabelSpringObservationEventListenerTest.java
+            |   +-- EmbabelTracingObservationHandlerTest.java
+            |   +-- TrackedAspectTest.java
+            |   +-- SpringObservationProofOfConceptTest.java
+            +-- mdc/
+            |   +-- MdcPropagationEventListenerTest.java
+            +-- metrics/
+                +-- EmbabelMetricsEventListenerTest.java
 ```
 
 ### Architecture Diagram
@@ -225,6 +233,8 @@ embabel-agent-observability/
 | `trace-lifecycle-states` | boolean | `true` | Trace WAITING/PAUSED/STUCK |
 | `trace-object-binding` | boolean | `false` | Trace object binding (verbose) |
 | `trace-tracked-operations` | boolean | `true` | Enable/disable `@Tracked` annotation aspect |
+| `mdc-propagation` | boolean | `true` | Propagate agent context into SLF4J MDC for log correlation |
+| `metrics-enabled` | boolean | `true` | Enable/disable Micrometer business metrics (counters, gauges) |
 
 ### Implementation Types
 
@@ -270,6 +280,8 @@ embabel:
     trace-lifecycle-states: true
     trace-object-binding: false
     trace-tracked-operations: true
+    mdc-propagation: true
+    metrics-enabled: true
     max-attribute-length: 4000
 ```
 
@@ -417,6 +429,8 @@ Scope scope = span.makeCurrent();
 | `embabelObservationEventListener` | `trace-agent-events=true` | Embabel event listener |
 | `chatModelObservationFilter` | `trace-llm-calls=true` | Filter for Spring AI |
 | `trackedAspect` | AspectJ on classpath | `@Tracked` annotation support (via `TrackedAspectAutoConfiguration`) |
+| `mdcPropagationEventListener` | `mdc-propagation=true` | SLF4J MDC propagation for log correlation |
+| `embabelMetricsEventListener` | `metrics-enabled=true` + `MeterRegistry` bean | Micrometer business metrics (counters, gauges) |
 
 #### Selection Logic
 
@@ -779,6 +793,63 @@ public class MyService {
     }
 }
 ```
+
+### 6.8 MDC Propagation (MdcPropagationEventListener)
+
+The `MdcPropagationEventListener` automatically propagates Embabel Agent context into SLF4J MDC, enabling log correlation without any manual configuration.
+
+#### MDC Keys
+
+| MDC Key | Source | Set on | Removed on |
+|---------|--------|--------|------------|
+| `embabel.agent.run_id` | `process.getId()` | `AgentProcessCreationEvent` | `Completed`/`Failed`/`Killed` |
+| `embabel.agent.name` | `process.getAgent().getName()` | `AgentProcessCreationEvent` | `Completed`/`Failed`/`Killed` |
+| `embabel.action.name` | `action.getName()` | `ActionExecutionStartEvent` | `ActionExecutionResultEvent` |
+
+#### Logback Pattern Example
+
+```xml
+<pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [runId=%X{embabel.agent.run_id} agent=%X{embabel.agent.name} action=%X{embabel.action.name}] - %msg%n</pattern>
+```
+
+#### Auto-Configuration
+
+The listener is registered as a bean via `ObservabilityAutoConfiguration`, conditional on `embabel.observability.mdc-propagation=true` (enabled by default). It is independent of the three tracing implementations and can be disabled separately.
+
+### 6.9 Business Metrics (EmbabelMetricsEventListener)
+
+**File**: `src/main/java/com/embabel/agent/observability/metrics/EmbabelMetricsEventListener.java`
+
+**Role**: Emits Micrometer business metrics (counters and gauges) for agent processes, independent of the tracing implementation.
+
+#### Produced Metrics
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `embabel.agent.active` | Gauge | — | Number of agent processes currently running |
+| `embabel.agent.errors.total` | Counter | `agent` | Total agent process failures |
+| `embabel.llm.tokens.total` | Counter | `agent`, `direction` (input/output) | LLM tokens consumed |
+| `embabel.llm.cost.total` | Counter | `agent` | Estimated LLM cost in USD |
+| `embabel.tool.errors.total` | Counter | `tool` | Tool call failures by tool name |
+| `embabel.planning.replanning.total` | Counter | `agent` | Replanning events |
+
+#### Event Handling
+
+```java
+switch (event) {
+    case AgentProcessCreationEvent e -> activeAgents.incrementAndGet();
+    case AgentProcessCompletedEvent e -> { decrementAndGet(); recordTokensAndCost(); }
+    case AgentProcessFailedEvent e -> { decrementAndGet(); recordAgentError(); recordTokensAndCost(); }
+    case ProcessKilledEvent e -> activeAgents.decrementAndGet();
+    case ToolCallResponseEvent e -> recordToolError(e);  // only on failure
+    case ReplanRequestedEvent e -> recordReplanning();
+    default -> { }
+}
+```
+
+#### Auto-Configuration
+
+The listener requires a `MeterRegistry` bean and is conditional on `embabel.observability.metrics-enabled=true` (enabled by default). It works with any Micrometer registry (Prometheus, Datadog, etc.) and is independent of the tracing implementation.
 
 ---
 
@@ -1427,22 +1498,30 @@ These RAG events are available in `embabel-agent-rag` but **not yet traced**:
 
 ---
 
-### 13.13 Future Metrics (NOT IMPLEMENTED)
+### 13.13 Business Metrics via EmbabelMetricsEventListener (IMPLEMENTED)
+
+These metrics are produced by `EmbabelMetricsEventListener` when a `MeterRegistry` is available, independent of the tracing implementation:
+
+| Metric | Type | Tags | Status |
+|--------|------|------|--------|
+| `embabel.agent.active` | Gauge | — | [IMPL] |
+| `embabel.agent.errors.total` | Counter | `agent` | [IMPL] |
+| `embabel.llm.tokens.total` | Counter | `agent`, `direction` | [IMPL] |
+| `embabel.llm.cost.total` | Counter | `agent` | [IMPL] |
+| `embabel.tool.errors.total` | Counter | `tool` | [IMPL] |
+| `embabel.planning.replanning.total` | Counter | `agent` | [IMPL] |
+
+### 13.14 Future Metrics (NOT IMPLEMENTED)
 
 | Metric | Type | Description | Priority |
 |--------|------|-------------|----------|
-| `embabel.llm.tokens.input` | Counter | LLM input tokens | High |
-| `embabel.llm.tokens.output` | Counter | LLM output tokens | High |
-| `embabel.llm.cost` | Gauge | Estimated cost per LLM call | High |
-| `embabel.agent.cost.total` | Gauge | Total cost per agent execution | High |
 | `embabel.rag.latency` | Timer | RAG call latency | Medium |
 | `embabel.rag.documents.retrieved` | Counter | Documents retrieved | Medium |
 | `embabel.platform.agents.deployed` | Gauge | Deployed agents | Low |
-| `embabel.platform.agents.active` | Gauge | Active agents | Low |
 
 ---
 
-### 13.14 Roadmap Summary
+### 13.15 Roadmap Summary
 
 #### Phase 1 - Current (v0.3.x) [IMPL]
 
@@ -1460,6 +1539,9 @@ These RAG events are available in `embabel-agent-rag` but **not yet traced**:
 | [OK] LLM Events via ChatModel (1/1)      |
 | [OK] 3 Tracing Backends                  |
 | [OK] Automatic Metrics (Spring Obs)      |
+| [OK] Business Metrics (Micrometer)       |
+| [OK] LLM Token Usage Metrics             |
+| [OK] LLM Cost Estimation                 |
 | [OK] Multi-Exporters                     |
 +------------------------------------------+
 ```
@@ -1473,8 +1555,6 @@ These RAG events are available in `embabel-agent-rag` but **not yet traced**:
 | [ ] ProcessKilledEvent tracing           |
 | [ ] ProgressUpdateEvent tracing          |
 | [ ] DynamicAgentCreationEvent tracing    |
-| [ ] LLM Token Usage Metrics              |
-| [ ] LLM Cost Estimation                  |
 +------------------------------------------+
 ```
 
@@ -1509,7 +1589,7 @@ These RAG events are available in `embabel-agent-rag` but **not yet traced**:
 
 ---
 
-### 13.15 Embabel-Agent Event Classes (Reference)
+### 13.16 Embabel-Agent Event Classes (Reference)
 
 #### Source Files in embabel-agent-api
 
@@ -1663,10 +1743,11 @@ The embabel-agent application already has partial observability infrastructure:
 
 #### High Priority
 
-- [ ] `LlmRequestEvent` / `LlmResponseEvent` - Token metrics and costs
+- [x] LLM Token Usage Metrics - via `EmbabelMetricsEventListener` (`embabel.llm.tokens.total`)
+- [x] LLM Cost Estimation - via `EmbabelMetricsEventListener` (`embabel.llm.cost.total`)
+- [ ] `LlmRequestEvent` / `LlmResponseEvent` - Per-call token tracing
 - [ ] `InitialRequestRagPipelineEvent` / `InitialResponseRagPipelineEvent` - RAG tracing
 - [ ] `DynamicAgentCreationEvent` - Dynamic creation tracing
-- [ ] Metrics `agent.llm.tokens` and `agent.llm.duration`
 
 #### Medium Priority
 
@@ -1692,10 +1773,11 @@ This project is a **sophisticated observability library** that:
 2. **[OK] Supports three tracing backends** (flexible architecture)
 3. **[OK] Integrates with Spring AI** (LLM calls as children)
 4. **[OK] Provides automatic metrics** (SPRING_OBSERVATION mode)
-5. **[OK] Enables distributed tracing** (root spans, correct hierarchy)
-6. **[OK] Supports multiple exporters** (Langfuse, Zipkin, OTLP, custom)
-7. **[OK] Highly configurable** (7 on/off event categories)
-8. **[OK] Production-ready** (Spring Boot auto-configuration, thread-safe)
-9. **[OK] Custom operation tracking** (`@Tracked` annotation with automatic span creation)
+5. **[OK] Business metrics** (Micrometer counters/gauges: active agents, tokens, cost, errors, replanning)
+6. **[OK] Enables distributed tracing** (root spans, correct hierarchy)
+7. **[OK] Supports multiple exporters** (Langfuse, Zipkin, OTLP, custom)
+8. **[OK] Highly configurable** (7 on/off event categories)
+9. **[OK] Production-ready** (Spring Boot auto-configuration, thread-safe)
+10. **[OK] Custom operation tracking** (`@Tracked` annotation with automatic span creation)
 
 **Recommendation**: Use `SPRING_OBSERVATION` to benefit from both **traces** and automatic **metrics**.

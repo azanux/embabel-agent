@@ -160,6 +160,12 @@ public class EmbabelTracingObservationHandler
             span.name(context.getContextualName());
         }
 
+        // Propagate error from observation context to span
+        Throwable error = context.getError();
+        if (error != null) {
+            span.error(error);
+        }
+
         untrackActiveSpan(context);
         span.end();
         log.debug("Ended span for {}: {} (runId: {})",

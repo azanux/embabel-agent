@@ -100,6 +100,12 @@ public class ObservabilityProperties {
     /** Enable @Tracked annotation aspect for custom operation tracking. */
     private boolean traceTrackedOperations = true;
 
+    /** Propagate Embabel context (run_id, agent name, action name) into SLF4J MDC for log correlation. */
+    private boolean mdcPropagation = true;
+
+    /** Enable/disable Micrometer business metrics (counters, gauges). */
+    private boolean metricsEnabled = true;
+
     // Getters and Setters
 
     /**
@@ -404,5 +410,37 @@ public class ObservabilityProperties {
      */
     public void setTraceTrackedOperations(boolean traceTrackedOperations) {
         this.traceTrackedOperations = traceTrackedOperations;
+    }
+
+    /**
+     * Returns whether MDC propagation is enabled.
+     * @return true if MDC propagation is enabled
+     */
+    public boolean isMdcPropagation() {
+        return mdcPropagation;
+    }
+
+    /**
+     * Sets whether to propagate Embabel context into SLF4J MDC.
+     * @param mdcPropagation true to enable MDC propagation
+     */
+    public void setMdcPropagation(boolean mdcPropagation) {
+        this.mdcPropagation = mdcPropagation;
+    }
+
+    /**
+     * Returns whether Micrometer business metrics are enabled.
+     * @return true if metrics are enabled
+     */
+    public boolean isMetricsEnabled() {
+        return metricsEnabled;
+    }
+
+    /**
+     * Sets whether to enable Micrometer business metrics.
+     * @param metricsEnabled true to enable metrics
+     */
+    public void setMetricsEnabled(boolean metricsEnabled) {
+        this.metricsEnabled = metricsEnabled;
     }
 }

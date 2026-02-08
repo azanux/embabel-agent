@@ -17,10 +17,13 @@ package com.embabel.agent.autoconfigure.observability;
 
 import com.embabel.agent.api.event.AgenticEventListener;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.agent.observability.mdc.MdcPropagationEventListener;
 import com.embabel.agent.observability.observation.ChatModelObservationFilter;
 import com.embabel.agent.observability.observation.EmbabelFullObservationEventListener;
+import com.embabel.agent.observability.metrics.EmbabelMetricsEventListener;
 import com.embabel.agent.observability.observation.EmbabelObservationEventListener;
 import com.embabel.agent.observability.observation.EmbabelSpringObservationEventListener;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.tracing.Tracer;
 import io.opentelemetry.api.OpenTelemetry;
@@ -28,6 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -140,6 +144,36 @@ public class ObservabilityAutoConfiguration {
     public ChatModelObservationFilter chatModelObservationFilter(ObservabilityProperties properties) {
         log.debug("Configuring ChatModel observation filter for LLM call tracing");
         return new ChatModelObservationFilter(properties.getMaxAttributeLength());
+    }
+
+    /**
+     * Creates the MDC propagation listener for log correlation.
+     *
+     * @param properties the observability properties
+     * @return the MDC propagation event listener
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "embabel.observability", name = "mdc-propagation", havingValue = "true", matchIfMissing = true)
+    public MdcPropagationEventListener mdcPropagationEventListener(ObservabilityProperties properties) {
+        log.info("Configuring Embabel Agent MDC propagation for log correlation");
+        return new MdcPropagationEventListener(properties);
+    }
+
+    /**
+     * Creates the Micrometer business metrics listener.
+     *
+     * @param meterRegistry the meter registry
+     * @param properties the observability properties
+     * @return the metrics event listener
+     */
+    @Bean
+    @ConditionalOnBean(MeterRegistry.class)
+    @ConditionalOnProperty(prefix = "embabel.observability", name = "metrics-enabled",
+            havingValue = "true", matchIfMissing = true)
+    public EmbabelMetricsEventListener embabelMetricsEventListener(
+            MeterRegistry meterRegistry, ObservabilityProperties properties) {
+        log.info("Configuring Embabel Agent Micrometer metrics listener");
+        return new EmbabelMetricsEventListener(meterRegistry, properties);
     }
 
 }

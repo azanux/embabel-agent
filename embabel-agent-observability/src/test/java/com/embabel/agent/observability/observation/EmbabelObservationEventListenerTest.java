@@ -377,6 +377,46 @@ class EmbabelObservationEventListenerTest {
         }
 
         @Test
+        @DisplayName("Failed action should set ERROR status on span")
+        void action_shouldSetErrorStatus_whenFailed() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+
+            assertThat(actionSpan).isNotNull();
+            assertThat(actionSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+            assertThat(actionSpan.getAttributes().get(AttributeKey.stringKey("embabel.action.status")))
+                    .isEqualTo("FAILED");
+        }
+
+        @Test
+        @DisplayName("Succeeded action should set OK status on span")
+        void action_shouldSetOkStatus_whenSucceeded() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCEEDED");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+
+            assertThat(actionSpan).isNotNull();
+            assertThat(actionSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
+        }
+
+        @Test
         @DisplayName("Multiple actions should all be children of agent")
         void multipleActions_shouldAllBeChildrenOfAgent() {
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
@@ -620,6 +660,39 @@ class EmbabelObservationEventListenerTest {
         }
 
         @Test
+        @DisplayName("ReplanRequestedEvent should create span with reason when planning tracing enabled")
+        void replanRequested_shouldCreateSpan_whenEnabled() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ReplanRequestedEvent(process, "Tool loop detected issue"));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData replanSpan = findSpanByName(spans, "planning:replan_requested");
+
+            assertThat(replanSpan).isNotNull();
+            assertThat(replanSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
+            assertThat(replanSpan.getAttributes().get(AttributeKey.stringKey("embabel.replan.reason")))
+                    .isEqualTo("Tool loop detected issue");
+        }
+
+        @Test
+        @DisplayName("ReplanRequestedEvent should NOT create span when planning tracing disabled")
+        void replanRequested_shouldNotCreateSpan_whenDisabled() {
+            properties.setTracePlanning(false);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ReplanRequestedEvent(process, "some reason"));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(findSpanByName(spans, "planning:replan_requested")).isNull();
+        }
+
+        @Test
         @DisplayName("Replanning should increment iteration counter")
         void replanning_shouldIncrementIterationCounter() {
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
@@ -674,6 +747,81 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             // No way to verify spans since there's no exporter, but no exception = success
+        }
+    }
+
+    // ================================================================================
+    // LIFECYCLE STATE ERROR TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Lifecycle State Error Tests")
+    class LifecycleStateErrorTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+        private ObservabilityProperties properties;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            properties = new ObservabilityProperties();
+            properties.setTraceLifecycleStates(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("AgentProcessStuckEvent should create span with ERROR status")
+        void stuckEvent_shouldCreateSpan_withErrorStatus() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessStuckEvent(process));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData stuckSpan = findSpanByName(spans, "lifecycle:stuck");
+
+            assertThat(stuckSpan).isNotNull();
+            assertThat(stuckSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+            assertThat(stuckSpan.getAttributes().get(AttributeKey.stringKey("embabel.lifecycle.state")))
+                    .isEqualTo("STUCK");
+        }
+
+        @Test
+        @DisplayName("AgentProcessWaitingEvent should create span with OK status")
+        void waitingEvent_shouldCreateSpan_withOkStatus() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessWaitingEvent(process));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData waitingSpan = findSpanByName(spans, "lifecycle:waiting");
+
+            assertThat(waitingSpan).isNotNull();
+            assertThat(waitingSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
         }
     }
 
@@ -833,6 +981,52 @@ class EmbabelObservationEventListenerTest {
                     .isEqualTo("0.9");
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.provider.name")))
                     .isEqualTo("openai");
+        }
+
+        @Test
+        @DisplayName("LLM span should set ERROR when response is a Throwable")
+        void llmSpan_shouldSetErrorStatus_whenResponseIsThrowable() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", Object.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, new RuntimeException("LLM call failed"));
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            assertThat(llmSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
+        }
+
+        @Test
+        @DisplayName("LLM span should set OK when response is not a Throwable")
+        void llmSpan_shouldSetOkStatus_whenResponseIsNormal() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCEEDED");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+
+            assertThat(llmSpan).isNotNull();
+            assertThat(llmSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
         }
 
         @Test

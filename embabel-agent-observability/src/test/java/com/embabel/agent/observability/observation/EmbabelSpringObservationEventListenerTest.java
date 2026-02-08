@@ -168,6 +168,189 @@ class EmbabelSpringObservationEventListenerTest {
     }
 
     // ================================================================================
+    // REPLAN REQUESTED TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Replan Requested Tests")
+    class ReplanRequestedTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+
+            properties.setTracePlanning(true);
+        }
+
+        @Test
+        @DisplayName("ReplanRequestedEvent should create span with reason")
+        void replanRequested_shouldCreateSpan_withReason() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ReplanRequestedEvent(process, "Tool loop detected issue"));
+
+            verify(mockSpan, atLeastOnce()).name("planning:replan_requested");
+            verify(mockSpan, atLeastOnce()).tag("embabel.replan.reason", "Tool loop detected issue");
+        }
+
+        @Test
+        @DisplayName("ReplanRequestedEvent should NOT create span when planning tracing disabled")
+        void replanRequested_shouldNotCreateSpan_whenDisabled() {
+            properties.setTracePlanning(false);
+
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new ReplanRequestedEvent(process, "reason"));
+
+            verify(mockSpan, never()).name("planning:replan_requested");
+        }
+    }
+
+    // ================================================================================
+    // LIFECYCLE STATE ERROR TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Lifecycle State Error Tests")
+    class LifecycleStateErrorTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+
+            properties.setTraceLifecycleStates(true);
+        }
+
+        @Test
+        @DisplayName("AgentProcessStuckEvent should call span.error()")
+        void stuckEvent_shouldCallSpanError() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessStuckEvent(process));
+
+            verify(mockSpan, atLeastOnce()).name("lifecycle:stuck");
+            verify(mockSpan).error(any(RuntimeException.class));
+        }
+
+        @Test
+        @DisplayName("AgentProcessWaitingEvent should NOT call span.error()")
+        void waitingEvent_shouldNotCallSpanError() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessWaitingEvent(process));
+
+            verify(mockSpan, atLeastOnce()).name("lifecycle:waiting");
+            verify(mockSpan, never()).error(any(Throwable.class));
+        }
+    }
+
+    // ================================================================================
+    // ACTION RESULT TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Action Result Tests")
+    class ActionResultTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+        }
+
+        @Test
+        @DisplayName("Failed action should call span.error()")
+        void failedAction_shouldCallSpanError() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            listener.onProcessEvent(actionStart);
+
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+            listener.onProcessEvent(actionResult);
+
+            verify(mockSpan, atLeastOnce()).tag("embabel.action.status", "FAILED");
+            verify(mockSpan).error(any(RuntimeException.class));
+        }
+
+        @Test
+        @DisplayName("Succeeded action should not call span.error()")
+        void succeededAction_shouldNotCallSpanError() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            listener.onProcessEvent(actionStart);
+
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCEEDED");
+            listener.onProcessEvent(actionResult);
+
+            verify(mockSpan, atLeastOnce()).tag("embabel.action.status", "SUCCEEDED");
+            verify(mockSpan, never()).error(any(Throwable.class));
+        }
+    }
+
+    // ================================================================================
     // LLM CALL TESTS
     // ================================================================================
 
@@ -214,6 +397,52 @@ class EmbabelSpringObservationEventListenerTest {
             verify(mockSpan, atLeastOnce()).tag("gen_ai.request.max_tokens", "1000");
             verify(mockSpan, atLeastOnce()).tag("gen_ai.request.top_p", "0.9");
             verify(mockSpan, atLeastOnce()).tag("gen_ai.provider.name", "openai");
+        }
+    }
+
+    @Nested
+    @DisplayName("LLM Response Error Tests")
+    class LlmResponseErrorTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+
+            properties.setTraceLlmCalls(true);
+        }
+
+        @Test
+        @DisplayName("LLM response with Throwable should call span.error()")
+        void llmResponse_shouldCallSpanError_whenThrowable() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", Object.class);
+            listener.onProcessEvent(llmRequest);
+
+            @SuppressWarnings("unchecked")
+            LlmRequestEvent<Object> typedRequest = (LlmRequestEvent<Object>) llmRequest;
+            LlmResponseEvent<Object> llmResponse = typedRequest.responseEvent(
+                    new RuntimeException("LLM call failed"), java.time.Duration.ofMillis(150));
+            listener.onProcessEvent(llmResponse);
+
+            verify(mockSpan).error(any(Throwable.class));
         }
     }
 
@@ -426,6 +655,37 @@ class EmbabelSpringObservationEventListenerTest {
         LlmInteraction interaction = LlmInteraction.using(llmOptions);
 
         return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, java.util.Collections.emptyList());
+    }
+
+    private static ActionExecutionStartEvent createMockActionStartEvent(AgentProcess process, String fullName, String shortName) {
+        ActionExecutionStartEvent event = mock(ActionExecutionStartEvent.class);
+        when(event.getAgentProcess()).thenReturn(process);
+
+        Action action = mock(Action.class);
+        when(action.getName()).thenReturn(fullName);
+        when(action.shortName()).thenReturn(shortName);
+        when(action.getDescription()).thenReturn("Test action");
+        lenient().doReturn(action).when(event).getAction();
+
+        return event;
+    }
+
+    private static ActionExecutionResultEvent createMockActionResultEvent(AgentProcess process, String actionName, String status) {
+        ActionExecutionResultEvent event = mock(ActionExecutionResultEvent.class);
+        when(event.getAgentProcess()).thenReturn(process);
+        when(event.getRunningTime()).thenReturn(java.time.Duration.ofMillis(100));
+
+        Action action = mock(Action.class);
+        when(action.getName()).thenReturn(actionName);
+        lenient().doReturn(action).when(event).getAction();
+
+        ActionStatus actionStatus = mock(ActionStatus.class);
+        ActionStatusCode statusCode = mock(ActionStatusCode.class);
+        when(statusCode.name()).thenReturn(status);
+        when(actionStatus.getStatus()).thenReturn(statusCode);
+        lenient().doReturn(actionStatus).when(event).getActionStatus();
+
+        return event;
     }
 
     private static AgentProcess createMockAgentProcess(String runId, String agentName) {

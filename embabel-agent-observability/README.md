@@ -23,11 +23,17 @@
 
 ## Quick Start
 
-> **Note:** This library is not yet published to Maven Central. You need to build and install it locally first:
-> ```bash
-> git clone https://github.com/azanux/embabel-agent-observability
-> cd embabel-agent-observability
-> mvn clean install
+> **Note:** This library is published to the Embabel snapshot repository. Add the following repository to your `pom.xml`:
+> ```xml
+> <repositories>
+>     <repository>
+>         <id>embabel-snapshots</id>
+>         <url>https://repo.embabel.com/snapshots</url>
+>         <snapshots>
+>             <enabled>true</enabled>
+>         </snapshots>
+>     </repository>
+> </repositories>
 > ```
 
 ### 1. Add the core dependency
@@ -35,8 +41,8 @@
 ```xml
 <dependency>
     <groupId>com.embabel.agent</groupId>
-    <artifactId>embabel-agent-observability</artifactId>
-    <version>0.3.3-SNAPSHOT</version>
+    <artifactId>embabel-agent-starter-observability</artifactId>
+    <version>${embabel-agent.version}</version>
 </dependency>
 ```
 
@@ -48,13 +54,14 @@ embabel:
   observability:
     enabled: true
     service-name: my-agent-app
+    max-attribute-length: 4000
 
 # Spring Boot Tracing (required)
 management:
   tracing:
     enabled: true
     sampling:
-      probability: 1.0  # 1.0 = 100% of traces, 0.5 = 50%, etc.
+      probability: 1.0  # 1.0 = 100%, 0.5 = 50%, etc.
 ```
 
 ### 3. Choose your exporter
@@ -62,19 +69,11 @@ management:
 <details>
 <summary><b>Option A: Langfuse</b> (LLM-focused observability)</summary>
 
-First, clone and install the Langfuse exporter locally:
-```bash
-git clone https://github.com/quantpulsar/opentelemetry-exporter-langfuse
-cd opentelemetry-exporter-langfuse
-mvn clean install
-```
-
-Then add the dependency:
 ```xml
 <dependency>
     <groupId>com.quantpulsar</groupId>
     <artifactId>opentelemetry-exporter-langfuse</artifactId>
-    <version>0.3.3</version>
+    <version>0.3.4</version>
 </dependency>
 ```
 
@@ -201,6 +200,7 @@ Your agents are now fully traced. No code changes required.
 | **Lifecycle States** | Visibility into WAITING, PAUSED, STUCK states |
 | **Multi-Exporter Support** | Send traces to multiple backends simultaneously |
 | **Automatic Metrics** | Duration and count metrics (Spring Observation mode) |
+| **Business Metrics** | Micrometer counters/gauges: active agents, LLM tokens, cost, errors, replanning |
 | **`@Tracked` Annotation** | Custom operation tracking with automatic span creation |
 
 ### Coming Soon
@@ -210,7 +210,6 @@ Your agents are now fully traced. No code changes required.
 | RAG Pipeline Tracing | v0.5.x |
 | Dynamic Agent Creation Tracing | v0.4.x |
 | Pre-built Grafana Dashboards | v1.0.x |
-| Cost Analytics Dashboard | v1.0.x |
 
 ---
 
@@ -237,13 +236,20 @@ Your agents are now fully traced. No code changes required.
 | `embabel.observability.implementation` | `SPRING_OBSERVATION` | Tracing backend |
 | `embabel.observability.trace-agent-events` | `true` | Trace agent lifecycle |
 | `embabel.observability.trace-tool-calls` | `true` | Trace tool invocations (see note below) |
+| `embabel.observability.trace-tool-loop` | `true` | Trace tool loop execution |
 | `embabel.observability.trace-llm-calls` | `true` | Trace LLM calls |
 | `embabel.observability.trace-planning` | `true` | Trace planning events |
 | `embabel.observability.trace-state-transitions` | `true` | Trace state transitions |
 | `embabel.observability.trace-lifecycle-states` | `true` | Trace WAITING/PAUSED/STUCK states |
+| `embabel.observability.trace-rag` | `true` | Trace RAG events (request, response, pipeline) |
+| `embabel.observability.trace-ranking` | `true` | Trace ranking/selection events (agent routing) |
+| `embabel.observability.trace-dynamic-agent-creation` | `true` | Trace dynamic agent creation events |
 | `embabel.observability.trace-object-binding` | `false` | Trace object binding (verbose) |
+| `embabel.observability.trace-http-details` | `false` | Trace HTTP request/response details (bodies, headers) |
 | `embabel.observability.trace-tracked-operations` | `true` | Enable/disable `@Tracked` annotation aspect |
-| `embabel.observability.max-attribute-length` | `4000` | Max attribute length |
+| `embabel.observability.mdc-propagation` | `true` | Propagate agent context into SLF4J MDC for log correlation |
+| `embabel.observability.metrics-enabled` | `true` | Enable/disable Micrometer business metrics |
+| `embabel.observability.max-attribute-length` | `4000` | Max attribute length before truncation |
 
 ### Tool Observability Note
 
@@ -280,30 +286,32 @@ Your agents are now fully traced. No code changes required.
          └────────────┴─────┬─────┴───────────┘
                             │
                    ┌────────▼────────┐
-                   │  Event Listener │
+                   │ Event Listeners │
                    └────────┬────────┘
                             │
-         ┌──────────────────┼──────────────────┐
-         ▼                  ▼                  ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│     SPRING      │ │   MICROMETER    │ │  OPENTELEMETRY  │
-│   OBSERVATION   │ │    TRACING      │ │     DIRECT      │
-│  (Recommended)  │ │                 │ │                 │
-│ Traces+Metrics  │ │   Traces Only   │ │   Traces Only   │
-└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
-         │                   │                   │
-         └───────────────────┼───────────────────┘
-                             │
-                   ┌─────────▼─────────┐
-                   │   OpenTelemetry   │
-                   │   SpanExporter    │
-                   └─────────┬─────────┘
-                             │
-         ┌───────────┬───────┴───────┬───────────┐
-         ▼           ▼               ▼           ▼
-    ┌─────────┐ ┌─────────┐    ┌─────────┐ ┌─────────┐
-    │Langfuse │ │ Zipkin  │    │  OTLP   │ │Prometheus│
-    └─────────┘ └─────────┘    └─────────┘ └─────────┘
+    ┌───────────────────────┼───────────────────────┐
+    │  Tracing Listeners    │   Metrics Listener    │
+    │                       │                       │
+    ▼           ▼           ▼           ▼           │
+┌────────┐ ┌────────┐ ┌────────┐ ┌──────────────┐  │
+│ SPRING │ │MICROM. │ │ OTEL   │ │  MICROMETER  │  │
+│  OBS.  │ │TRACING │ │ DIRECT │ │  BUSINESS    │  │
+│(Recomm)│ │        │ │        │ │  METRICS     │  │
+└───┬────┘ └───┬────┘ └───┬────┘ └──────┬───────┘  │
+    │          │          │              │           │
+    └──────────┼──────────┘     ┌────────▼────────┐ │
+               │                │  MeterRegistry  │ │
+     ┌─────────▼─────────┐     │ (Prometheus...) │ │
+     │   OpenTelemetry   │     └─────────────────┘ │
+     │   SpanExporter    │                          │
+     └─────────┬─────────┘                          │
+               │                                    │
+    ┌──────────┼──────────┬──────────┐              │
+    ▼          ▼          ▼          ▼              │
+┌────────┐┌────────┐┌────────┐┌────────┐           │
+│Langfuse││ Zipkin ││  OTLP  ││ Custom │           │
+└────────┘└────────┘└────────┘└────────┘           │
+└───────────────────────────────────────────────────┘
 ```
 
 **Key Points:**
@@ -438,6 +446,61 @@ public class MyService {
     @Tracked("step1")
     public String step1() { return "ok"; }
 }
+```
+
+---
+
+## MDC Propagation for Log Correlation
+
+Embabel Agent context is automatically propagated into SLF4J MDC, making it easy to filter and correlate application logs by agent run or action.
+
+### MDC Keys
+
+| MDC Key | Description | Set on | Removed on |
+|---------|-------------|--------|------------|
+| `embabel.agent.run_id` | Agent process ID | Agent creation | Agent completed/failed/killed |
+| `embabel.agent.name` | Agent name | Agent creation | Agent completed/failed/killed |
+| `embabel.action.name` | Current action name | Action start | Action result |
+
+### Logback Pattern Example
+
+```xml
+<pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [runId=%X{embabel.agent.run_id} agent=%X{embabel.agent.name} action=%X{embabel.action.name}] - %msg%n</pattern>
+```
+
+This produces logs like:
+```
+14:23:45.123 [main] INFO  c.e.MyService [runId=abc-123 agent=CustomerServiceAgent action=AnalyzeRequest] - Processing request
+```
+
+To disable MDC propagation:
+```yaml
+embabel:
+  observability:
+    mdc-propagation: false
+```
+
+---
+
+## Business Metrics (Micrometer)
+
+When a `MeterRegistry` is available (e.g. via `micrometer-registry-prometheus`), the module automatically registers the following business metrics, independent of the tracing implementation chosen:
+
+| Metric | Type | Tags | Description |
+|--------|------|------|-------------|
+| `embabel.agent.active` | Gauge | — | Number of agent processes currently running |
+| `embabel.agent.errors.total` | Counter | `agent` | Total agent process failures |
+| `embabel.llm.tokens.total` | Counter | `agent`, `direction` (input/output) | LLM tokens consumed |
+| `embabel.llm.cost.total` | Counter | `agent` | Estimated LLM cost in USD |
+| `embabel.tool.errors.total` | Counter | `tool` | Tool call failures by tool name |
+| `embabel.planning.replanning.total` | Counter | `agent` | Replanning events |
+
+These metrics are exploitable by **Prometheus** and **Grafana** out of the box. To disable:
+
+```yaml
+embabel:
+  observability:
+    metrics-enabled: false
 ```
 
 ---

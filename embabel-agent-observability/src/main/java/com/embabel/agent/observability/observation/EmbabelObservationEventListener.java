@@ -172,7 +172,7 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
                 if (properties.isTraceLifecycleStates()) onLifecycleState(e, "PAUSED");
             }
             case AgentProcessStuckEvent e -> {
-                if (properties.isTraceLifecycleStates()) onLifecycleState(e, "STUCK");
+                if (properties.isTraceLifecycleStates()) onStuck(e);
             }
             case ObjectAddedEvent e -> {
                 if (properties.isTraceObjectBinding()) onObjectAdded(e);
@@ -194,6 +194,9 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
             }
             case AgentProcessRagEvent e -> {
                 if (properties.isTraceRag()) onRagEvent(e);
+            }
+            case ReplanRequestedEvent e -> {
+                if (properties.isTracePlanning()) onReplanRequested(e);
             }
             case ProcessKilledEvent e -> onProcessKilled(e);
             default -> {}
@@ -411,7 +414,11 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
                 ctx.span.setAttribute("embabel.action.result", truncate(lastResult.toString()));
             }
 
-            ctx.span.setStatus(StatusCode.OK);
+            if ("FAILED".equals(statusName)) {
+                ctx.span.setStatus(StatusCode.ERROR, "Action failed: " + actionName);
+            } else {
+                ctx.span.setStatus(StatusCode.OK);
+            }
             ctx.scope.close();
             ctx.span.end();
 
@@ -759,6 +766,28 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         log.debug("Recorded plan formulated event (iteration: {}, runId: {})", iteration, runId);
     }
 
+    private void onReplanRequested(ReplanRequestedEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        Context parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
+
+        Span span = tracer.spanBuilder("planning:replan_requested")
+                .setParent(parentContext)
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("name", "planning:replan_requested")
+                .setAttribute("embabel.event.type", "replan_requested")
+                .setAttribute("embabel.agent.run_id", runId)
+                .setAttribute("embabel.replan.reason", truncate(event.getReason()))
+                .startSpan();
+
+        span.setStatus(StatusCode.OK);
+        span.end();
+
+        log.debug("Recorded replan requested event (runId: {}, reason: {})", runId, event.getReason());
+    }
+
     // ==================== State Transitions ====================
 
     private void onStateTransition(StateTransitionEvent event) {
@@ -819,6 +848,33 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         span.end();
 
         log.debug("Recorded lifecycle state: {} (runId: {})", state, runId);
+    }
+
+    private void onStuck(AgentProcessStuckEvent event) {
+        AgentProcess process = event.getAgentProcess();
+        String runId = process.getId();
+
+        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        Context parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
+
+        Span span = tracer.spanBuilder("lifecycle:stuck")
+                .setParent(parentContext)
+                .setSpanKind(SpanKind.INTERNAL)
+                .setAttribute("name", "lifecycle:stuck")
+                .setAttribute("embabel.event.type", "lifecycle_stuck")
+                .setAttribute("embabel.agent.run_id", runId)
+                .setAttribute("embabel.lifecycle.state", "STUCK")
+                .startSpan();
+
+        String snapshot = getBlackboardSnapshot(process);
+        if (!snapshot.isEmpty()) {
+            span.setAttribute("input.value", truncate(snapshot));
+        }
+
+        span.setStatus(StatusCode.ERROR, "Agent process is stuck");
+        span.end();
+
+        log.debug("Recorded lifecycle state: STUCK (runId: {})", runId);
     }
 
     // ==================== Object Binding ====================
@@ -1030,11 +1086,17 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
 
         if (ctx != null) {
             ctx.span.setAttribute("embabel.llm.duration_ms", event.getRunningTime().toMillis());
-            if (event.getResponse() != null) {
-                ctx.span.setAttribute("embabel.llm.output_type", event.getResponse().getClass().getSimpleName());
+            Object response = event.getResponse();
+            if (response != null) {
+                ctx.span.setAttribute("embabel.llm.output_type", response.getClass().getSimpleName());
             }
 
-            ctx.span.setStatus(StatusCode.OK);
+            if (response instanceof Throwable error) {
+                ctx.span.setStatus(StatusCode.ERROR, error.getMessage());
+                ctx.span.recordException(error);
+            } else {
+                ctx.span.setStatus(StatusCode.OK);
+            }
             ctx.scope.close();
             ctx.span.end();
 
