@@ -27,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
+import java.util.StringJoiner;
 
 /**
  * Aspect that intercepts methods annotated with {@link Tracked} and creates
@@ -40,12 +41,13 @@ import java.util.Arrays;
 public class TrackedAspect {
 
     private static final Logger log = LoggerFactory.getLogger(TrackedAspect.class);
-    private static final int MAX_VALUE_LENGTH = 256;
 
     private final ObservationRegistry registry;
+    private final int maxAttributeLength;
 
-    public TrackedAspect(ObservationRegistry registry) {
+    public TrackedAspect(ObservationRegistry registry, int maxAttributeLength) {
         this.registry = registry;
+        this.maxAttributeLength = maxAttributeLength;
     }
 
     /**
@@ -84,7 +86,7 @@ public class TrackedAspect {
         }
 
         // High cardinality tags (inputs)
-        String argsString = truncate(Arrays.toString(joinPoint.getArgs()));
+        String argsString = truncate(formatArgs(signature.getParameterNames(), joinPoint.getArgs()));
         observation.highCardinalityKeyValue("embabel.tracked.args", argsString);
 
         observation.start();
@@ -104,9 +106,20 @@ public class TrackedAspect {
         }
     }
 
-    private static String truncate(String value) {
-        if (value.length() > MAX_VALUE_LENGTH) {
-            return value.substring(0, MAX_VALUE_LENGTH - 3) + "...";
+    private String formatArgs(String[] paramNames, Object[] args) {
+        if (paramNames == null || paramNames.length != args.length) {
+            return Arrays.toString(args);
+        }
+        StringJoiner joiner = new StringJoiner(", ", "{", "}");
+        for (int i = 0; i < paramNames.length; i++) {
+            joiner.add(paramNames[i] + "=" + args[i]);
+        }
+        return joiner.toString();
+    }
+
+    private String truncate(String value) {
+        if (value.length() > maxAttributeLength) {
+            return value.substring(0, maxAttributeLength - 3) + "...";
         }
         return value;
     }

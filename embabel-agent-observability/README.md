@@ -365,11 +365,13 @@ public PaymentResult processPayment(Order order) {
 ### What Gets Captured
 
 - **Operation name** (from `value` or method name)
-- **Method arguments** (truncated to 256 chars)
+- **Method arguments with parameter names** (e.g., `{query=hello, limit=10}`, truncated to `max-attribute-length`)
 - **Return value** (truncated to 256 chars)
 - **Duration** (automatic)
 - **Errors** (automatic, with stack trace)
 - **Agent context** (runId, agent name — when inside an agent process)
+
+> **Note:** Parameter names are automatically resolved via the method signature. If parameter names are not available (e.g., compiled without `-parameters` flag and no debug info), the output falls back to array format: `[hello, 10]`.
 
 ### Trace Hierarchy
 

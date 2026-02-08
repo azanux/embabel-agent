@@ -677,7 +677,7 @@ An `@Aspect` that intercepts `@Tracked`-annotated methods via `@Around("@annotat
 3. Creates `EmbabelObservationContext.custom(runId, operationName)`
 4. Creates observation via `Observation.createNotStarted(name, contextSupplier, registry)`
 5. Tags low-cardinality: `type`, `class`, `description` (if present), `agent` (if in agent context)
-6. Tags high-cardinality: `args` (truncated to 256 chars), `result` (truncated to 256 chars)
+6. Tags high-cardinality: `args` with parameter names (truncated to `maxAttributeLength`), `result` (truncated to `maxAttributeLength`)
 7. Opens scope, proceeds, captures result or error, closes scope, stops observation
 
 #### Captured Span Attributes
@@ -688,7 +688,7 @@ An `@Aspect` that intercepts `@Tracked`-annotated methods via `@Around("@annotat
 | `embabel.tracked.class` | Low | Declaring class simple name |
 | `embabel.tracked.description` | Low | Description (if non-empty) |
 | `embabel.tracked.agent` | Low | Agent name (if inside AgentProcess) |
-| `embabel.tracked.args` | High | Method arguments (truncated) |
+| `embabel.tracked.args` | High | Method arguments with parameter names, e.g., `{query=hello, limit=10}` (truncated to `max-attribute-length`, falls back to `[val1, val2]` if names unavailable) |
 | `embabel.tracked.result` | High | Return value (truncated) |
 
 #### Usage Examples

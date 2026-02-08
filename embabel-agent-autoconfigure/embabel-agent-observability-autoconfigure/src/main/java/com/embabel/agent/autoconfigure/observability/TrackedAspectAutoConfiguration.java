@@ -15,6 +15,7 @@
  */
 package com.embabel.agent.autoconfigure.observability;
 
+import com.embabel.agent.observability.ObservabilityProperties;
 import com.embabel.agent.observability.observation.TrackedAspect;
 import io.micrometer.observation.ObservationRegistry;
 import org.slf4j.Logger;
@@ -43,12 +44,13 @@ public class TrackedAspectAutoConfiguration {
      * Creates the aspect for {@code @Tracked} annotation support.
      *
      * @param observationRegistry the observation registry
+     * @param properties          the observability properties
      * @return the tracked aspect
      */
     @Bean
     @ConditionalOnMissingBean
-    public TrackedAspect trackedAspect(ObservationRegistry observationRegistry) {
+    public TrackedAspect trackedAspect(ObservationRegistry observationRegistry, ObservabilityProperties properties) {
         log.info("Configuring @Tracked annotation aspect for custom operation tracking");
-        return new TrackedAspect(observationRegistry);
+        return new TrackedAspect(observationRegistry, properties.getMaxAttributeLength());
     }
 }

@@ -60,7 +60,7 @@ class TrackedAspectTest {
         registry = ObservationRegistry.create();
         capturingHandler = new CapturingHandler();
         registry.observationConfig().observationHandler(capturingHandler);
-        aspect = new TrackedAspect(registry);
+        aspect = new TrackedAspect(registry, 4000);
     }
 
     private void setupJoinPoint(String methodName) throws NoSuchMethodException {
@@ -68,6 +68,7 @@ class TrackedAspectTest {
         lenient().when(joinPoint.getSignature()).thenReturn(methodSignature);
         lenient().when(methodSignature.getMethod()).thenReturn(method);
         lenient().when(methodSignature.getDeclaringType()).thenReturn(SampleService.class);
+        lenient().when(methodSignature.getParameterNames()).thenReturn(new String[]{"input"});
         lenient().when(joinPoint.getArgs()).thenReturn(new Object[]{"test-input"});
     }
 
@@ -159,7 +160,7 @@ class TrackedAspectTest {
         }
 
         @Test
-        @DisplayName("Should capture method arguments as high cardinality key value")
+        @DisplayName("Should capture method arguments with parameter names")
         void shouldCaptureArgs() throws Throwable {
             setupJoinPoint("customNamed");
             when(joinPoint.proceed()).thenReturn("result");
@@ -170,7 +171,7 @@ class TrackedAspectTest {
             aspect.tracked(joinPoint, tracked);
 
             EmbabelObservationContext ctx = capturingHandler.contexts.get(0);
-            assertThat(hasHighCardinalityKeyValue(ctx, "embabel.tracked.args", "[test-input]")).isTrue();
+            assertThat(hasHighCardinalityKeyValue(ctx, "embabel.tracked.args", "{input=test-input}")).isTrue();
         }
 
         @Test
@@ -189,14 +190,40 @@ class TrackedAspectTest {
         }
 
         @Test
-        @DisplayName("Should truncate long arguments")
+        @DisplayName("Should truncate long arguments using configured maxAttributeLength")
         void shouldTruncateLongArgs() throws Throwable {
+            int maxLen = 100;
+            TrackedAspect shortAspect = new TrackedAspect(registry, maxLen);
+
             Method method = SampleService.class.getMethod("customNamed", String.class);
             lenient().when(joinPoint.getSignature()).thenReturn(methodSignature);
             lenient().when(methodSignature.getMethod()).thenReturn(method);
             lenient().when(methodSignature.getDeclaringType()).thenReturn(SampleService.class);
+            lenient().when(methodSignature.getParameterNames()).thenReturn(new String[]{"input"});
             String longArg = "x".repeat(300);
             when(joinPoint.getArgs()).thenReturn(new Object[]{longArg});
+            when(joinPoint.proceed()).thenReturn("ok");
+
+            Tracked tracked = method.getAnnotation(Tracked.class);
+
+            shortAspect.tracked(joinPoint, tracked);
+
+            EmbabelObservationContext ctx = capturingHandler.contexts.get(0);
+            String argsValue = getHighCardinalityValue(ctx, "embabel.tracked.args");
+            assertThat(argsValue).isNotNull();
+            assertThat(argsValue.length()).isLessThanOrEqualTo(maxLen);
+            assertThat(argsValue).endsWith("...");
+        }
+
+        @Test
+        @DisplayName("Should capture multiple parameters with names")
+        void shouldCaptureMultipleParamsWithNames() throws Throwable {
+            Method method = SampleService.class.getMethod("multiParam", String.class, int.class);
+            lenient().when(joinPoint.getSignature()).thenReturn(methodSignature);
+            lenient().when(methodSignature.getMethod()).thenReturn(method);
+            lenient().when(methodSignature.getDeclaringType()).thenReturn(SampleService.class);
+            lenient().when(methodSignature.getParameterNames()).thenReturn(new String[]{"query", "limit"});
+            when(joinPoint.getArgs()).thenReturn(new Object[]{"hello", 10});
             when(joinPoint.proceed()).thenReturn("ok");
 
             Tracked tracked = method.getAnnotation(Tracked.class);
@@ -204,9 +231,23 @@ class TrackedAspectTest {
             aspect.tracked(joinPoint, tracked);
 
             EmbabelObservationContext ctx = capturingHandler.contexts.get(0);
-            String argsValue = getHighCardinalityValue(ctx, "embabel.tracked.args");
-            assertThat(argsValue).isNotNull();
-            assertThat(argsValue.length()).isLessThanOrEqualTo(256);
+            assertThat(hasHighCardinalityKeyValue(ctx, "embabel.tracked.args", "{query=hello, limit=10}")).isTrue();
+        }
+
+        @Test
+        @DisplayName("Should fallback to array format when parameter names are null")
+        void shouldFallbackWhenNoParamNames() throws Throwable {
+            setupJoinPoint("customNamed");
+            lenient().when(methodSignature.getParameterNames()).thenReturn(null);
+            when(joinPoint.proceed()).thenReturn("ok");
+
+            Tracked tracked = SampleService.class.getMethod("customNamed", String.class)
+                    .getAnnotation(Tracked.class);
+
+            aspect.tracked(joinPoint, tracked);
+
+            EmbabelObservationContext ctx = capturingHandler.contexts.get(0);
+            assertThat(hasHighCardinalityKeyValue(ctx, "embabel.tracked.args", "[test-input]")).isTrue();
         }
 
         @Test
@@ -346,6 +387,11 @@ class TrackedAspectTest {
 
         @Tracked(value = "described", description = "A test description")
         public String withDescription(String input) {
+            return "ok";
+        }
+
+        @Tracked("multiOp")
+        public String multiParam(String query, int limit) {
             return "ok";
         }
     }
