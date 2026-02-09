@@ -33,21 +33,8 @@ public class ObservabilityProperties {
     public ObservabilityProperties() {
     }
 
-    /** Tracing implementation type. */
-    public enum Implementation {
-        /** Spring Observation API - traces + metrics (recommended). - default */
-        SPRING_OBSERVATION,
-        /** Micrometer Tracing API - traces only. */
-        MICROMETER_TRACING,
-        /** OpenTelemetry API direct - traces only. */
-        OPENTELEMETRY_DIRECT
-    }
-
     /** Enable/disable observability. */
     private boolean enabled = true;
-
-    /** Tracing implementation type. */
-    private Implementation implementation = Implementation.SPRING_OBSERVATION;
 
     /** Service name for traces. */
     private String serviceName = "embabel-agent";
@@ -122,22 +109,6 @@ public class ObservabilityProperties {
      */
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
-    }
-
-    /**
-     * Returns the tracing implementation type.
-     * @return the implementation
-     */
-    public Implementation getImplementation() {
-        return implementation;
-    }
-
-    /**
-     * Sets the tracing implementation type.
-     * @param implementation the implementation to use
-     */
-    public void setImplementation(Implementation implementation) {
-        this.implementation = implementation;
     }
 
     /**

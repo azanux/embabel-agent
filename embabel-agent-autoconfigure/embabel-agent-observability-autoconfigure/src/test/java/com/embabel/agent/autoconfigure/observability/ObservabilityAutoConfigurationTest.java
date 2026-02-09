@@ -15,17 +15,14 @@
  */
 package com.embabel.agent.autoconfigure.observability;
 
-import com.embabel.agent.api.event.AgenticEventListener;
 import com.embabel.agent.observability.ObservabilityProperties;
 import com.embabel.agent.observability.metrics.EmbabelMetricsEventListener;
 import com.embabel.agent.observability.observation.ChatModelObservationFilter;
 import com.embabel.agent.observability.mdc.MdcPropagationEventListener;
-import com.embabel.agent.observability.observation.EmbabelObservationEventListener;
-import com.embabel.agent.observability.observation.EmbabelSpringObservationEventListener;
+import com.embabel.agent.observability.observation.EmbabelFullObservationEventListener;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.micrometer.tracing.Tracer;
-import io.opentelemetry.api.OpenTelemetry;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -33,7 +30,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /**
  * Tests conditional bean creation in ObservabilityAutoConfiguration.
@@ -47,34 +43,42 @@ class ObservabilityAutoConfigurationTest {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class));
 
-    // --- Event Listener creation and fallback chain ---
+    // --- Event Listener creation ---
 
     @Test
     void eventListener_shouldBeCreated_byDefault() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
-                    assertThat(context).hasSingleBean(EmbabelObservationEventListener.class);
+                    assertThat(context).hasSingleBean(EmbabelFullObservationEventListener.class);
                 });
     }
 
     @Test
     void eventListener_shouldNotBeCreated_whenDisabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.enabled=false")
                 .run(context -> {
-                    assertThat(context).doesNotHaveBean(EmbabelObservationEventListener.class);
+                    assertThat(context).doesNotHaveBean(EmbabelFullObservationEventListener.class);
                 });
     }
 
     @Test
     void eventListener_shouldNotBeCreated_whenTraceAgentEventsDisabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.trace-agent-events=false")
                 .run(context -> {
-                    assertThat(context).doesNotHaveBean(EmbabelObservationEventListener.class);
+                    assertThat(context).doesNotHaveBean(EmbabelFullObservationEventListener.class);
+                });
+    }
+
+    @Test
+    void eventListener_shouldNotBeCreated_whenNoObservationRegistry() {
+        contextRunner
+                .run(context -> {
+                    assertThat(context).doesNotHaveBean(EmbabelFullObservationEventListener.class);
                 });
     }
 
@@ -83,7 +87,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void chatModelFilter_shouldBeCreated_byDefault() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(ChatModelObservationFilter.class);
                 });
@@ -92,7 +96,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void chatModelFilter_shouldNotBeCreated_whenDisabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.trace-llm-calls=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(ChatModelObservationFilter.class);
@@ -104,7 +108,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void propertiesBean_shouldBeCreated() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(ObservabilityProperties.class);
                 });
@@ -113,7 +117,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void properties_shouldApplyCustomValues() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues(
                         "embabel.observability.service-name=my-app",
                         "embabel.observability.max-attribute-length=2000"
@@ -125,42 +129,12 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
-    @Test
-    void eventListener_shouldUseMicrometerTracing_whenPropertySetAndTracerAvailable() {
-        contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class, TracerConfig.class)
-                .withPropertyValues("embabel.observability.implementation=MICROMETER_TRACING")
-                .run(context -> {
-                    assertThat(context).hasSingleBean(EmbabelSpringObservationEventListener.class);
-                });
-    }
-
-    @Test
-    void eventListener_shouldUseOpenTelemetryDirect_whenPropertySet() {
-        contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class, TracerConfig.class)
-                .withPropertyValues("embabel.observability.implementation=OPENTELEMETRY_DIRECT")
-                .run(context -> {
-                    assertThat(context).hasSingleBean(EmbabelObservationEventListener.class);
-                });
-    }
-
-    @Test
-    void eventListener_shouldFallbackToOpenTelemetry_whenNoTracer() {
-        contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
-                .withPropertyValues("embabel.observability.implementation=MICROMETER_TRACING")
-                .run(context -> {
-                    assertThat(context).hasSingleBean(EmbabelObservationEventListener.class);
-                });
-    }
-
     // --- MDC propagation ---
 
     @Test
     void mdcPropagationListener_shouldBeCreated_byDefault() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(MdcPropagationEventListener.class);
                 });
@@ -169,7 +143,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void mdcPropagationListener_shouldNotBeCreated_whenDisabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.mdc-propagation=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(MdcPropagationEventListener.class);
@@ -181,7 +155,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void httpBodyCachingFilter_shouldNotBeCreated_byDefault() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(HttpBodyCachingFilter.class);
                 });
@@ -190,7 +164,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void httpBodyCachingFilter_shouldBeCreated_whenTraceHttpDetailsEnabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.trace-http-details=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(HttpBodyCachingFilter.class);
@@ -200,7 +174,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void httpRequestObservationFilter_shouldNotBeCreated_byDefault() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(HttpRequestObservationFilter.class);
                 });
@@ -209,7 +183,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void httpRequestObservationFilter_shouldBeCreated_whenTraceHttpDetailsEnabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .withPropertyValues("embabel.observability.trace-http-details=true")
                 .run(context -> {
                     assertThat(context).hasSingleBean(HttpRequestObservationFilter.class);
@@ -221,7 +195,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void metricsListener_shouldBeCreated_whenMeterRegistryAvailable() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class, MeterRegistryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class, MeterRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).hasSingleBean(EmbabelMetricsEventListener.class);
                 });
@@ -230,7 +204,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void metricsListener_shouldNotBeCreated_whenMetricsDisabled() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class, MeterRegistryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class, MeterRegistryConfig.class)
                 .withPropertyValues("embabel.observability.metrics-enabled=false")
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(EmbabelMetricsEventListener.class);
@@ -240,7 +214,7 @@ class ObservabilityAutoConfigurationTest {
     @Test
     void metricsListener_shouldNotBeCreated_whenNoMeterRegistry() {
         contextRunner
-                .withUserConfiguration(OpenTelemetryConfig.class)
+                .withUserConfiguration(ObservationRegistryConfig.class)
                 .run(context -> {
                     assertThat(context).doesNotHaveBean(EmbabelMetricsEventListener.class);
                 });
@@ -249,18 +223,10 @@ class ObservabilityAutoConfigurationTest {
     // --- Test configurations providing mock beans ---
 
     @Configuration
-    static class OpenTelemetryConfig {
+    static class ObservationRegistryConfig {
         @Bean
-        OpenTelemetry openTelemetry() {
-            return mock(OpenTelemetry.class);
-        }
-    }
-
-    @Configuration
-    static class TracerConfig {
-        @Bean
-        Tracer tracer() {
-            return mock(Tracer.class);
+        ObservationRegistry observationRegistry() {
+            return ObservationRegistry.create();
         }
     }
 

@@ -176,7 +176,6 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
 
     /**
      * Extracts the error from a Kotlin Result via reflection.
-     * Copied pattern from {@code EmbabelObservationEventListener}.
      */
     private Throwable extractToolError(ToolCallResponseEvent event) {
         try {

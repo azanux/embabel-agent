@@ -1227,7 +1227,7 @@ Pick **one** (or combine multiple):
 <dependency>
     <groupId>com.quantpulsar</groupId>
     <artifactId>opentelemetry-exporter-langfuse</artifactId>
-    <version>0.3.4</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 

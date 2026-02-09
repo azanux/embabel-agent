@@ -460,7 +460,7 @@ Or Langfuse for LLM-focused observability:
 <dependency>
     <groupId>com.quantpulsar</groupId>
     <artifactId>opentelemetry-exporter-langfuse</artifactId>
-    <version>0.3.4</version>
+    <version>0.4.0</version>
 </dependency>
 ----
 
@@ -534,10 +534,6 @@ All tracing options are enabled by default and can be toggled individually:
 |`embabel.observability.service-name`
 |`embabel-agent`
 |Service name in traces
-
-|`embabel.observability.implementation`
-|`SPRING_OBSERVATION`
-|Tracing backend (`SPRING_OBSERVATION`, `MICROMETER_TRACING`, or `OPENTELEMETRY_DIRECT`)
 
 |`embabel.observability.trace-agent-events`
 |`true`

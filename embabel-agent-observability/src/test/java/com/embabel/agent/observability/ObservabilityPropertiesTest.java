@@ -30,7 +30,6 @@ class ObservabilityPropertiesTest {
         ObservabilityProperties props = new ObservabilityProperties();
 
         assertThat(props.isEnabled()).isTrue();
-        assertThat(props.getImplementation()).isEqualTo(ObservabilityProperties.Implementation.SPRING_OBSERVATION);
         assertThat(props.getServiceName()).isEqualTo("embabel-agent");
         assertThat(props.getTracerName()).isEqualTo("embabel-agent");
         assertThat(props.getTracerVersion()).isEqualTo("0.3.4");
@@ -71,31 +70,6 @@ class ObservabilityPropertiesTest {
         assertThat(props.getServiceName()).isEqualTo("custom-service");
         assertThat(props.getMaxAttributeLength()).isEqualTo(1000);
         assertThat(props.isTraceToolCalls()).isFalse();
-    }
-
-    // Test implementation setter
-    @Test
-    void setImplementation_shouldUpdateValue() {
-        ObservabilityProperties props = new ObservabilityProperties();
-
-        props.setImplementation(ObservabilityProperties.Implementation.MICROMETER_TRACING);
-        assertThat(props.getImplementation()).isEqualTo(ObservabilityProperties.Implementation.MICROMETER_TRACING);
-
-        props.setImplementation(ObservabilityProperties.Implementation.OPENTELEMETRY_DIRECT);
-        assertThat(props.getImplementation()).isEqualTo(ObservabilityProperties.Implementation.OPENTELEMETRY_DIRECT);
-    }
-
-    // Test all Implementation enum values exist
-    @Test
-    void implementationEnum_shouldHaveAllValues() {
-        ObservabilityProperties.Implementation[] values = ObservabilityProperties.Implementation.values();
-
-        assertThat(values).hasSize(3);
-        assertThat(values).contains(
-                ObservabilityProperties.Implementation.SPRING_OBSERVATION,
-                ObservabilityProperties.Implementation.MICROMETER_TRACING,
-                ObservabilityProperties.Implementation.OPENTELEMETRY_DIRECT
-        );
     }
 
     // Test tracerName setter
@@ -209,14 +183,4 @@ class ObservabilityPropertiesTest {
         assertThat(props.isTraceHttpDetails()).isTrue();
     }
 
-    // Test valueOf for Implementation enum
-    @Test
-    void implementationEnum_valueOf_shouldWork() {
-        assertThat(ObservabilityProperties.Implementation.valueOf("SPRING_OBSERVATION"))
-                .isEqualTo(ObservabilityProperties.Implementation.SPRING_OBSERVATION);
-        assertThat(ObservabilityProperties.Implementation.valueOf("MICROMETER_TRACING"))
-                .isEqualTo(ObservabilityProperties.Implementation.MICROMETER_TRACING);
-        assertThat(ObservabilityProperties.Implementation.valueOf("OPENTELEMETRY_DIRECT"))
-                .isEqualTo(ObservabilityProperties.Implementation.OPENTELEMETRY_DIRECT);
-    }
 }

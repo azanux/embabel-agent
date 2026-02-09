@@ -73,7 +73,7 @@ management:
 <dependency>
     <groupId>com.quantpulsar</groupId>
     <artifactId>opentelemetry-exporter-langfuse</artifactId>
-    <version>0.3.4</version>
+    <version>0.4.0</version>
 </dependency>
 ```
 
@@ -134,10 +134,6 @@ docker run -d -p 9411:9411 openzipkin/zipkin
 ```
 
 ```yaml
-embabel:
-  observability:
-    implementation: SPRING_OBSERVATION  # Required for metrics
-
 management:
   endpoints:
     web:
@@ -240,7 +236,6 @@ Your agents are now fully traced. No code changes required.
 |----------|---------|-------------|
 | `embabel.observability.enabled` | `true` | Enable/disable observability |
 | `embabel.observability.service-name` | `embabel-agent` | Service name in traces |
-| `embabel.observability.implementation` | `SPRING_OBSERVATION` | Tracing backend |
 | `embabel.observability.trace-agent-events` | `true` | Trace agent lifecycle |
 | `embabel.observability.trace-tool-calls` | `true` | Trace tool invocations (see note below) |
 | `embabel.observability.trace-tool-loop` | `true` | Trace tool loop execution |
@@ -270,49 +265,6 @@ Your agents are now fully traced. No code changes required.
 > ```
 > This avoids duplicate tool call spans and lets Embabel Agent handle tool tracing directly.
 
-### Implementation Modes
-
-| Mode | Traces | Metrics | Recommended |
-|------|--------|---------|-------------|
-| `SPRING_OBSERVATION` | Yes | Yes | **Yes** |
-| `MICROMETER_TRACING` | Yes | No | |
-| `OPENTELEMETRY_DIRECT` | Yes | No | |
-
-### Automatic Implementation Selection
-
-The tracing implementation is **automatically selected** based on what is available in your classpath. You typically don't need to set `embabel.observability.implementation` manually — the autoconfiguration detects the richest available option and falls back gracefully:
-
-```
-SPRING_OBSERVATION  →  ObservationRegistry available?
-        │ yes                          │ no
-        ▼                              ▼
-  EmbabelFull               MICROMETER_TRACING  →  Micrometer Tracer available?
-  ObservationEvent                │ yes                          │ no
-  Listener                        ▼                              ▼
-  (traces + metrics)       EmbabelSpring                  EmbabelObservation
-                           ObservationEvent               EventListener
-                           Listener                       (OTel direct, fallback)
-                           (traces only)
-```
-
-| Your classpath includes | Bean auto-created | Implementation selected |
-|---|---|---|
-| `spring-boot-starter-actuator` + `micrometer-tracing-bridge-otel` | `ObservationRegistry` + `Tracer` | **SPRING_OBSERVATION** — `EmbabelFullObservationEventListener` + `EmbabelTracingObservationHandler` + `ChatModelObservationFilter` (traces + automatic metrics) |
-| `micrometer-tracing-bridge-otel` (without full actuator) | `Tracer` only | **MICROMETER_TRACING** — `EmbabelSpringObservationEventListener` (traces only) |
-| `opentelemetry-sdk` only (e.g. Langfuse SDK standalone) | `OpenTelemetry` only | **OPENTELEMETRY_DIRECT** — `EmbabelObservationEventListener` (traces only, no Spring dependency) |
-
-All three implementations produce the **same span hierarchy** with the **same attributes** — only the abstraction layer used to create spans differs.
-
-In `SPRING_OBSERVATION` mode, the `EmbabelTracingObservationHandler` converts Embabel observations into Micrometer spans with proper parent-child resolution (including cross-thread scenarios), while `ChatModelObservationFilter` enriches Spring AI ChatModel observations with GenAI semantic convention attributes (prompts, completions, token counts).
-
-To override the automatic selection, set the property explicitly:
-
-```yaml
-embabel:
-  observability:
-    implementation: MICROMETER_TRACING  # Force a specific implementation
-```
-
 ---
 
 ## How It Works
@@ -332,27 +284,31 @@ embabel:
                    └────────┬────────┘
                             │
     ┌───────────────────────┼───────────────────────┐
-    │  Tracing Listeners    │   Metrics Listener    │
+    │  Tracing Listener     │   Metrics Listener    │
     │                       │                       │
-    ▼           ▼           ▼           ▼           │
-┌────────┐ ┌────────┐ ┌────────┐ ┌──────────────┐  │
-│ SPRING │ │MICROM. │ │ OTEL   │ │  MICROMETER  │  │
-│  OBS.  │ │TRACING │ │ DIRECT │ │  BUSINESS    │  │
-│(Recomm)│ │        │ │        │ │  METRICS     │  │
-└───┬────┘ └───┬────┘ └───┬────┘ └──────┬───────┘  │
-    │          │          │              │           │
-    └──────────┼──────────┘     ┌────────▼────────┐ │
-               │                │  MeterRegistry  │ │
-     ┌─────────▼─────────┐     │ (Prometheus...) │ │
-     │   OpenTelemetry   │     └─────────────────┘ │
-     │   SpanExporter    │                          │
-     └─────────┬─────────┘                          │
-               │                                    │
-    ┌──────────┼──────────┬──────────┐              │
-    ▼          ▼          ▼          ▼              │
-┌────────┐┌────────┐┌────────┐┌────────┐           │
-│Langfuse││ Zipkin ││  OTLP  ││ Custom │           │
-└────────┘└────────┘└────────┘└────────┘           │
+    ▼                       ▼                       │
+┌────────────┐       ┌──────────────┐               │
+│  SPRING    │       │  MICROMETER  │               │
+│OBSERVATION │       │  BUSINESS    │               │
+│(traces +   │       │  METRICS     │               │
+│ metrics)   │       └──────┬───────┘               │
+└───┬────────┘              │                       │
+    │              ┌────────▼────────┐              │
+    │              │  MeterRegistry  │              │
+    │              │ (Prometheus...) │              │
+    │              └─────────────────┘              │
+    │                                               │
+    ▼                                               │
+┌─────────────────────┐                             │
+│   OpenTelemetry     │                             │
+│   SpanExporter      │                             │
+└─────────┬───────────┘                             │
+          │                                         │
+ ┌────────┼──────────┬──────────┐                   │
+ ▼        ▼          ▼          ▼                   │
+┌────────┐┌────────┐┌────────┐┌────────┐            │
+│Langfuse││ Zipkin ││  OTLP  ││ Custom │            │
+└────────┘└────────┘└────────┘└────────┘            │
 └───────────────────────────────────────────────────┘
 ```
 
