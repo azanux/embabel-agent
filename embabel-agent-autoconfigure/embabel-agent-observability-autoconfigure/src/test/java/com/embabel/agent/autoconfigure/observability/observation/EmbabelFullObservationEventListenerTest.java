@@ -44,6 +44,7 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -924,6 +925,140 @@ class EmbabelFullObservationEventListenerTest {
             LlmRequestEvent<?> request, O response) {
         LlmRequestEvent<O> typedRequest = (LlmRequestEvent<O>) request;
         return typedRequest.responseEvent(response, Duration.ofMillis(150));
+    }
+
+    // --- Parallel LLM/Tool-loop Tests ---
+
+    @Nested
+    @DisplayName("Parallel LLM Call Tests")
+    class ParallelLlmCallTests {
+
+        @Test
+        @DisplayName("Parallel LLM calls with same runId+actionName should produce distinct spans")
+        void parallelLlmCalls_shouldProduceDistinctSpans() {
+            properties.setTraceLlmCalls(true);
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            // Start agent + action
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+
+            // Fire 3 LLM requests with same runId + actionName (simulates parallelMap)
+            LlmRequestEvent<?> req1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
+            LlmRequestEvent<?> req2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
+            LlmRequestEvent<?> req3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
+
+            listener.onProcessEvent(req1);
+            listener.onProcessEvent(req2);
+            listener.onProcessEvent(req3);
+
+            // Fire 3 LLM responses
+            listener.onProcessEvent(createMockLlmResponseEvent(req1, "result1"));
+            listener.onProcessEvent(createMockLlmResponseEvent(req2, "result2"));
+            listener.onProcessEvent(createMockLlmResponseEvent(req3, "result3"));
+
+            // Complete action + agent
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            // Verify: 3 distinct LLM spans + 1 action span + 1 agent span = 5 spans
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            long llmSpanCount = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gemini-2.5-pro"))
+                    .count();
+            assertThat(llmSpanCount)
+                    .as("Expected 3 distinct LLM spans for 3 parallel calls with same runId+actionName")
+                    .isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("Parallel tool loops should produce distinct spans")
+        void parallelToolLoops_shouldProduceDistinctSpans() {
+            properties.setTraceToolLoop(true);
+            properties.setTraceLlmCalls(true);
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            // Start agent + action
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+
+            // Fire 2 tool loop starts with same runId but different interactionIds
+            ToolLoopStartEvent tls1 = new ToolLoopStartEvent(
+                    process, actionStart.getAction(),
+                    List.of("tool1"), 10, "interaction-1", String.class);
+            ToolLoopStartEvent tls2 = new ToolLoopStartEvent(
+                    process, actionStart.getAction(),
+                    List.of("tool1"), 10, "interaction-2", String.class);
+
+            listener.onProcessEvent(tls1);
+            listener.onProcessEvent(tls2);
+
+            // Complete both tool loops
+            listener.onProcessEvent(tls1.completedEvent(3, false));
+            listener.onProcessEvent(tls2.completedEvent(2, false));
+
+            // Complete action + agent
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            // Verify: 2 distinct tool-loop spans
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            long toolLoopSpanCount = spans.stream()
+                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .count();
+            assertThat(toolLoopSpanCount)
+                    .as("Expected 2 distinct tool-loop spans")
+                    .isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("Tool loop should use current observation as parent (not map lookup)")
+        void toolLoopParent_shouldUseCurrentObservation() {
+            properties.setTraceToolLoop(true);
+            properties.setTraceLlmCalls(true);
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            // Start agent + action
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+
+            // Start LLM (opens scope, making it the current observation)
+            LlmRequestEvent<?> llmReq = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
+            listener.onProcessEvent(llmReq);
+
+            // Start tool loop — should be parented under the LLM observation via getCurrentObservation()
+            ToolLoopStartEvent tls = new ToolLoopStartEvent(
+                    process, actionStart.getAction(),
+                    List.of("tool1"), 10, "interaction-1", String.class);
+            listener.onProcessEvent(tls);
+
+            // Complete tool loop, LLM, action, agent
+            listener.onProcessEvent(tls.completedEvent(2, false));
+            listener.onProcessEvent(createMockLlmResponseEvent(llmReq, "result"));
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            // Verify: tool-loop span is parented under the LLM span
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData toolLoopSpan = spans.stream()
+                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .findFirst()
+                    .orElseThrow();
+            SpanData llmSpan = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gemini-2.5-pro"))
+                    .findFirst()
+                    .orElseThrow();
+
+            assertThat(toolLoopSpan.getParentSpanId())
+                    .as("Tool loop should be parented under the LLM span")
+                    .isEqualTo(llmSpan.getSpanId());
+        }
     }
 
     // --- Test Helper Classes ---

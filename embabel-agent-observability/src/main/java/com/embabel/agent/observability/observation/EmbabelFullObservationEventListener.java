@@ -767,20 +767,24 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer llm observation, then action observation, fallback to agent observation
-        var llmKey = "llm:" + runId + ":" + actionName;
-        ObservationContext parentCtx = activeObservations.get(llmKey);
+        // Find parent: prefer current observation (LLM obs has openScope() on this thread),
+        // then action observation, fallback to agent observation
+        Observation currentObs = observationRegistry.getCurrentObservation();
         String resolvedParent;
-        if (parentCtx != null) {
-            resolvedParent = "llm (key=" + llmKey + ")";
+        Observation parentObs;
+        if (currentObs != null) {
+            parentObs = currentObs;
+            resolvedParent = "current (name=" + currentObs.getContext().getName() + ")";
         } else {
             var actionKey = "action:" + runId + ":" + actionName;
-            parentCtx = activeObservations.get(actionKey);
+            ObservationContext parentCtx = activeObservations.get(actionKey);
             if (parentCtx != null) {
+                parentObs = parentCtx.observation;
                 resolvedParent = "action (key=" + actionKey + ")";
             } else {
-                parentCtx = activeObservations.get("agent:" + runId);
-                resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE";
+                ObservationContext agentCtx = activeObservations.get("agent:" + runId);
+                parentObs = agentCtx != null ? agentCtx.observation : null;
+                resolvedParent = agentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE";
             }
         }
         log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
@@ -790,8 +794,8 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
 
         Observation observation = Observation.createNotStarted("tool-loop:" + interactionId, () -> context, observationRegistry);
 
-        if (parentCtx != null) {
-            observation.parentObservation(parentCtx.observation);
+        if (parentObs != null) {
+            observation.parentObservation(parentObs);
         } else {
             log.warn("No parent found for tool loop {} (runId: {}). Tool loop will be an independent trace.", interactionId, runId);
         }
@@ -806,7 +810,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.start();
         Observation.Scope scope = observation.openScope();
 
-        activeObservations.put("tool-loop:" + runId + ":" + interactionId, new ObservationContext(observation, scope));
+        activeObservations.put("tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId(), new ObservationContext(observation, scope));
         log.debug("Started observation for tool loop: {} (runId: {})", interactionId, runId);
     }
 
@@ -817,7 +821,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        var key = "tool-loop:" + runId + ":" + interactionId;
+        var key = "tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId();
 
         ObservationContext ctx = activeObservations.remove(key);
 
@@ -888,7 +892,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.start();
         Observation.Scope scope = observation.openScope();
 
-        activeObservations.put("llm:" + runId + ":" + actionName, new ObservationContext(observation, scope));
+        activeObservations.put("llm:" + runId + ":" + System.identityHashCode(event), new ObservationContext(observation, scope));
         log.debug("Started LLM observation: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
 
@@ -898,9 +902,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String actionName = event.getRequest().getAction() != null
-                ? event.getRequest().getAction().getName() : "__no_action__";
-        String key = "llm:" + runId + ":" + actionName;
+        String key = "llm:" + runId + ":" + System.identityHashCode(event.getRequest());
 
         ObservationContext ctx = activeObservations.remove(key);
 
@@ -920,7 +922,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             ctx.scope.close();
             ctx.observation.stop();
 
-            log.debug("Completed LLM observation (runId: {}, action: {})", runId, actionName);
+            log.debug("Completed LLM observation (runId: {}, key: {})", runId, key);
         }
     }
 
