@@ -1557,31 +1557,27 @@ class EmbabelObservationEventListenerTest {
         }
 
         @Test
-        @DisplayName("Parallel LLM calls with same runId and actionName should produce distinct spans")
-        void parallelLlmCalls_shouldProduceDistinctSpans() {
+        @DisplayName("Parallel LLM calls on different threads should produce distinct spans")
+        void parallelLlmCalls_shouldProduceDistinctSpans() throws Exception {
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
             ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
 
             listener.onProcessEvent(new AgentProcessCreationEvent(process));
             listener.onProcessEvent(actionStart);
 
-            // Fire 3 parallel LLM requests (same runId + actionName)
-            LlmRequestEvent<?> llmRequest1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
-            LlmRequestEvent<?> llmRequest2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
-            LlmRequestEvent<?> llmRequest3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
-
-            listener.onProcessEvent(llmRequest1);
-            listener.onProcessEvent(llmRequest2);
-            listener.onProcessEvent(llmRequest3);
-
-            // Complete them in order
-            LlmResponseEvent<?> llmResponse1 = createMockLlmResponseEvent(llmRequest1, "result1");
-            LlmResponseEvent<?> llmResponse2 = createMockLlmResponseEvent(llmRequest2, "result2");
-            LlmResponseEvent<?> llmResponse3 = createMockLlmResponseEvent(llmRequest3, "result3");
-
-            listener.onProcessEvent(llmResponse1);
-            listener.onProcessEvent(llmResponse2);
-            listener.onProcessEvent(llmResponse3);
+            // Fire 3 LLM request/response pairs on separate threads (simulates parallelMap)
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            for (int i = 0; i < 3; i++) {
+                final int idx = i;
+                new Thread(() -> {
+                    LlmRequestEvent<?> req = createMockLlmRequestEvent(
+                            process, "com.example.MyAction", "gpt-4", String.class);
+                    listener.onProcessEvent(req);
+                    listener.onProcessEvent(createMockLlmResponseEvent(req, "result" + idx));
+                    latch.countDown();
+                }).start();
+            }
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
 
             ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
             listener.onProcessEvent(actionResult);
@@ -1594,7 +1590,7 @@ class EmbabelObservationEventListenerTest {
                     .filter(s -> s.getName().equals("llm:gpt-4"))
                     .count();
             assertThat(llmSpanCount)
-                    .as("Should produce 3 distinct LLM spans for 3 parallel calls")
+                    .as("Should produce 3 distinct LLM spans for 3 parallel calls on different threads")
                     .isEqualTo(3);
 
             SpanData actionSpan = findSpanByName(spans, "MyAction");

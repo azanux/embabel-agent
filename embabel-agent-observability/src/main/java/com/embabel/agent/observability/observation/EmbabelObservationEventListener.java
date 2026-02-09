@@ -953,27 +953,28 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Use Context.current() as parent — the LLM span has already called makeCurrent()
-        // on this worker thread, so Context.current() contains the correct parent span.
-        // This approach supports parallel LLM calls (each on its own thread) without
-        // needing to look up the LLM span by key.
-        io.opentelemetry.api.trace.Span currentSpan = Span.fromContext(Context.current());
+        // Find parent: prefer LLM span (by threadId), then action, fallback to agent.
+        // LlmRequest, ToolLoopStart, and LlmResponse are dispatched on the same worker thread,
+        // so threadId is a reliable correlation key for the LLM→tool-loop parent relationship.
+        var llmKey = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        SpanContext llmCtx = activeSpans.get(llmKey);
         Context parentContext;
         String resolvedParent;
-        if (currentSpan.getSpanContext().isValid()) {
-            parentContext = Context.current();
-            resolvedParent = "Context.current() (spanId=" + currentSpan.getSpanContext().getSpanId() + ")";
+        if (llmCtx != null) {
+            parentContext = Context.current().with(llmCtx.span);
+            resolvedParent = "llm (key=" + llmKey + ")";
         } else {
             // Fallback to action span, then agent span
             var actionKey = "action:" + runId + ":" + actionName;
             SpanContext parentCtx = activeSpans.get(actionKey);
             if (parentCtx != null) {
+                parentContext = Context.current().with(parentCtx.span);
                 resolvedParent = "action (key=" + actionKey + ")";
             } else {
                 parentCtx = activeSpans.get("agent:" + runId);
+                parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
                 resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE (using Context.current())";
             }
-            parentContext = parentCtx != null ? Context.current().with(parentCtx.span) : Context.current();
         }
         log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
                 resolvedParent, runId, actionName, interactionId, activeSpans.keySet());
@@ -1070,11 +1071,26 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
             span.setAttribute("gen_ai.provider.name", provider);
         }
 
+        // Capture LLM input from messages
+        java.util.List<?> messages = event.getMessages();
+        if (messages != null && !messages.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (Object msg : messages) {
+                if (sb.length() > 0) sb.append("\n");
+                if (msg instanceof com.embabel.chat.Message m) {
+                    sb.append("[").append(m.getRole().name()).append("]: ").append(m.getContent());
+                }
+            }
+            if (sb.length() > 0) {
+                span.setAttribute("input.value", truncate(sb.toString()));
+            }
+        }
+
         // CRITICAL: makeCurrent() so tool-loop becomes child of this LLM span
         Scope scope = span.makeCurrent();
-        // Use identityHashCode(event) as discriminant to support parallel LLM calls
-        // with the same runId+actionName (e.g., from parallelMap)
-        activeSpans.put("llm:" + runId + ":" + System.identityHashCode(event), new SpanContext(span, scope));
+        // Use threadId as discriminant — parallel LLM calls run on different worker threads,
+        // and LlmRequest/ToolLoopStart/LlmResponse are sequential on the same thread
+        activeSpans.put("llm:" + runId + ":" + Thread.currentThread().threadId(), new SpanContext(span, scope));
 
         log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
@@ -1085,8 +1101,8 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        // Match the request event's identityHashCode to find the correct span
-        String key = "llm:" + runId + ":" + System.identityHashCode(event.getRequest());
+        // Match by threadId — LlmRequest and LlmResponse are on the same worker thread
+        String key = "llm:" + runId + ":" + Thread.currentThread().threadId();
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1101,6 +1117,9 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
                 ctx.span.setStatus(StatusCode.ERROR, error.getMessage());
                 ctx.span.recordException(error);
             } else {
+                if (response != null) {
+                    ctx.span.setAttribute("output.value", truncate(response.toString()));
+                }
                 ctx.span.setStatus(StatusCode.OK);
             }
             ctx.scope.close();
