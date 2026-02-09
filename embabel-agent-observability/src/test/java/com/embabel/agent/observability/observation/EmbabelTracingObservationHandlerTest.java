@@ -26,6 +26,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import io.micrometer.observation.Observation;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
@@ -327,6 +329,72 @@ class EmbabelTracingObservationHandlerTest {
 
             // Verify: ToolLoop span was created with agentSpan as parent
             verify(tracer).nextSpan(agentSpan);
+        }
+
+        @Test
+        @DisplayName("ToolLoop should use parentObservation LLM span over currentSpan (cross-thread fix)")
+        void toolLoopSpan_shouldPreferParentObservation_overCurrentSpan() {
+            Span agentSpan = createMockSpan("agent-span");
+            Span actionSpan = createMockSpan("action-span");
+            Span llmSpan = createMockSpan("llm-span");
+            Span toolLoopSpan = createMockSpan("tool-loop-span");
+
+            Tracer.SpanInScope agentScope = mock(Tracer.SpanInScope.class);
+            Tracer.SpanInScope actionScope = mock(Tracer.SpanInScope.class);
+            Tracer.SpanInScope llmScope = mock(Tracer.SpanInScope.class);
+
+            // Agent start: root span
+            lenient().when(tracer.nextSpan()).thenReturn(agentSpan);
+            lenient().when(agentSpan.name(anyString())).thenReturn(agentSpan);
+            lenient().when(agentSpan.start()).thenReturn(agentSpan);
+            lenient().when(tracer.withSpan(null)).thenReturn(agentScope);
+            lenient().when(tracer.withSpan(agentSpan)).thenReturn(agentScope);
+
+            var agentCtx = EmbabelObservationContext.rootAgent("run-1", "TestAgent");
+            handler.onStart(agentCtx);
+            handler.onScopeOpened(agentCtx);
+
+            // Action start: child of agent
+            lenient().when(tracer.nextSpan(agentSpan)).thenReturn(actionSpan);
+            lenient().when(actionSpan.name(anyString())).thenReturn(actionSpan);
+            lenient().when(actionSpan.start()).thenReturn(actionSpan);
+            lenient().when(tracer.withSpan(actionSpan)).thenReturn(actionScope);
+
+            var actionCtx = EmbabelObservationContext.action("run-1", "MyAction");
+            handler.onStart(actionCtx);
+            handler.onScopeOpened(actionCtx);
+
+            // LLM call start: child of action
+            lenient().when(tracer.nextSpan(actionSpan)).thenReturn(llmSpan);
+            lenient().when(llmSpan.name(anyString())).thenReturn(llmSpan);
+            lenient().when(llmSpan.start()).thenReturn(llmSpan);
+            lenient().when(tracer.withSpan(llmSpan)).thenReturn(llmScope);
+
+            var llmCtx = EmbabelObservationContext.llmCall("run-1", "llm:gpt-4");
+            handler.onStart(llmCtx);
+            handler.onScopeOpened(llmCtx);
+
+            // Create mock LLM Observation wrapping llmCtx (which has TracingContext with llmSpan)
+            Observation llmObservation = mock(Observation.class);
+            lenient().when(llmObservation.getContext()).thenReturn(llmCtx);
+            lenient().when(llmObservation.getContextView()).thenReturn(llmCtx);
+
+            // Cross-thread: currentSpan() returns ACTION span (propagated via async thread)
+            lenient().when(tracer.currentSpan()).thenReturn(actionSpan);
+
+            // Stub for fix path: nextSpan(llmSpan) should return toolLoopSpan
+            lenient().when(tracer.nextSpan(llmSpan)).thenReturn(toolLoopSpan);
+            lenient().when(toolLoopSpan.name(anyString())).thenReturn(toolLoopSpan);
+            lenient().when(toolLoopSpan.start()).thenReturn(toolLoopSpan);
+
+            // Create tool-loop context with parentObservation pointing to LLM
+            var toolLoopCtx = EmbabelObservationContext.toolLoop("run-1", "tool-loop:interaction-1");
+            toolLoopCtx.setParentObservation(llmObservation);
+            handler.onStart(toolLoopCtx);
+
+            // Verify: ToolLoop span was created with llmSpan as parent (from parentObservation),
+            // NOT actionSpan (from tracer.currentSpan())
+            verify(tracer).nextSpan(llmSpan);
         }
 
         @Test

@@ -209,6 +209,19 @@ public class EmbabelTracingObservationHandler
      * @return the parent span, or null if none
      */
     private Span resolveParentSpan(EmbabelObservationContext context) {
+        // Check if the listener has explicitly set a parent observation.
+        // This handles cross-thread scenarios (e.g., CompletableFuture.supplyAsync)
+        // where tracer.currentSpan() returns the wrong span.
+        var parentObs = context.getParentObservation();
+        if (parentObs != null && parentObs.getContextView() instanceof Observation.Context parentCtx) {
+            TracingContext parentTracingCtx = parentCtx.get(TracingContext.class);
+            if (parentTracingCtx != null && parentTracingCtx.getSpan() != null) {
+                log.debug("Parent span resolved from parentObservation for {} '{}' (runId: {})",
+                        context.getEventType(), context.getName(), context.getRunId());
+                return parentTracingCtx.getSpan();
+            }
+        }
+
         String runId = context.getRunId();
 
         switch (context.getEventType()) {
