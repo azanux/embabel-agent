@@ -33,7 +33,7 @@ class ObservabilityPropertiesTest {
         assertThat(props.getImplementation()).isEqualTo(ObservabilityProperties.Implementation.SPRING_OBSERVATION);
         assertThat(props.getServiceName()).isEqualTo("embabel-agent");
         assertThat(props.getTracerName()).isEqualTo("embabel-agent");
-        assertThat(props.getTracerVersion()).isEqualTo("0.3.3");
+        assertThat(props.getTracerVersion()).isEqualTo("0.3.4");
         assertThat(props.getMaxAttributeLength()).isEqualTo(4000);
     }
 
@@ -53,8 +53,8 @@ class ObservabilityPropertiesTest {
         assertThat(props.isTraceDynamicAgentCreation()).isTrue();
         // Object binding disabled by default (verbose)
         assertThat(props.isTraceObjectBinding()).isFalse();
-        // HTTP details disabled by default (security/performance)
-        assertThat(props.isTraceHttpDetails()).isFalse();
+        // HTTP details enabled by default
+        assertThat(props.isTraceHttpDetails()).isTrue();
     }
 
     // Test setters work correctly

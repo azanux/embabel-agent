@@ -118,9 +118,6 @@ public class TrackedAspect {
     }
 
     private String truncate(String value) {
-        if (value.length() > maxAttributeLength) {
-            return value.substring(0, maxAttributeLength - 3) + "...";
-        }
-        return value;
+        return ObservationUtils.truncate(value, maxAttributeLength);
     }
 }

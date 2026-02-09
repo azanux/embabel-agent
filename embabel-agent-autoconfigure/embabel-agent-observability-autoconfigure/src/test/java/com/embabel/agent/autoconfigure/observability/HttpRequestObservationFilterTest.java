@@ -29,8 +29,13 @@ import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Tests for {@link HttpRequestObservationFilter}, which enriches HTTP server observations
+ * with request/response details (headers, params, body) as high-cardinality key values.
+ */
 class HttpRequestObservationFilterTest {
 
+    // Tests that non-HTTP observation contexts are passed through unchanged.
     @Nested
     class NonHttpContext {
 
@@ -45,6 +50,7 @@ class HttpRequestObservationFilterTest {
         }
     }
 
+    // Tests extraction of HTTP request headers, including sensitive header masking.
     @Nested
     class RequestHeaders {
 
@@ -62,6 +68,7 @@ class HttpRequestObservationFilterTest {
                     .contains("Content-Type: application/json");
         }
 
+        // Authorization header value must be replaced with "***" to prevent token leakage.
         @Test
         void shouldMaskAuthorizationHeader() {
             var filter = new HttpRequestObservationFilter(4000);
@@ -92,6 +99,7 @@ class HttpRequestObservationFilterTest {
         }
     }
 
+    // Tests extraction of HTTP query parameters into key values.
     @Nested
     class RequestParams {
 
@@ -111,6 +119,7 @@ class HttpRequestObservationFilterTest {
             assertThat(params).contains("page=1");
         }
 
+        // When no query parameters exist, the key value should not be added at all.
         @Test
         void shouldHandleNoParameters() {
             var filter = new HttpRequestObservationFilter(4000);
@@ -124,6 +133,7 @@ class HttpRequestObservationFilterTest {
         }
     }
 
+    // Tests extraction of request body, which requires a ContentCachingRequestWrapper.
     @Nested
     class RequestBody {
 
@@ -144,6 +154,7 @@ class HttpRequestObservationFilterTest {
                     .isEqualTo("{\"name\":\"test\"}");
         }
 
+        // Without a caching wrapper, the body stream may already be consumed; filter skips it.
         @Test
         void shouldNotAddRequestBodyWhenNotCachingWrapper() {
             var filter = new HttpRequestObservationFilter(4000);
@@ -158,6 +169,7 @@ class HttpRequestObservationFilterTest {
         }
     }
 
+    // Tests extraction of response body, which requires a ContentCachingResponseWrapper.
     @Nested
     class ResponseBody {
 
@@ -190,14 +202,16 @@ class HttpRequestObservationFilterTest {
         }
     }
 
+    // Tests that bodies exceeding maxBodyLength are truncated with a "..." suffix.
     @Nested
     class Truncation {
 
         @Test
         void shouldTruncateBodyWhenExceedsMaxLength() {
+            // maxBodyLength=10: a 26-char body should be cut to 10 chars + "..." suffix.
             var filter = new HttpRequestObservationFilter(10);
             var inner = new MockHttpServletRequest();
-            inner.setContent("a]bcdefghijklmnopqrstuvwxyz".getBytes(StandardCharsets.UTF_8));
+            inner.setContent("abcdefghijklmnopqrstuvwxyz".getBytes(StandardCharsets.UTF_8));
             var wrapper = new ContentCachingRequestWrapper(inner);
             try { wrapper.getInputStream().readAllBytes(); } catch (Exception ignored) {}
             var response = new MockHttpServletResponse();

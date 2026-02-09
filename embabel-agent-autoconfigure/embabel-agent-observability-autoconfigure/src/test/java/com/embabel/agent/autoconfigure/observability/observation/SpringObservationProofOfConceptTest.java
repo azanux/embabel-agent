@@ -98,6 +98,7 @@ class SpringObservationProofOfConceptTest {
         spanExporter.reset();
     }
 
+    // Smoke test: observation creates a span through the handler
     @Test
     @DisplayName("ObservationRegistry should have DefaultTracingObservationHandler registered")
     void observationRegistry_shouldHaveTracingHandlerRegistered() {
@@ -112,6 +113,7 @@ class SpringObservationProofOfConceptTest {
         assertThat(spans.get(0).getName()).isEqualTo("test.observation");
     }
 
+    // Verifies that opening scope on a parent before creating a child establishes hierarchy
     @Test
     @DisplayName("Nested observations should create parent-child span relationships")
     void nestedObservations_shouldCreateParentChildRelationships() {
@@ -150,6 +152,7 @@ class SpringObservationProofOfConceptTest {
         assertThat(childSpan.getTraceId()).isEqualTo(parentSpan.getTraceId());
     }
 
+    // Documents that Micrometer's withSpan(null) does NOT clear OTel context -- the span still gets a parent
     @Test
     @DisplayName("withSpan(null) before observation.start() - KNOWN LIMITATION: does NOT work")
     void withSpanNull_beforeObservationStart_knownLimitation() {
@@ -196,6 +199,7 @@ class SpringObservationProofOfConceptTest {
                 .isNotEqualTo(io.opentelemetry.api.trace.SpanId.getInvalid());
     }
 
+    // Demonstrates the workaround: using Tracer API directly (not Observation API) with withSpan(null) DOES create root spans
     @Test
     @DisplayName("Direct Tracer nextSpan inside withSpan(null) - WORKS for root spans")
     void directTracerNextSpan_insideWithSpanNull_createsRootSpan() {
@@ -255,6 +259,7 @@ class SpringObservationProofOfConceptTest {
                 .isEqualTo(rootSpanData.getTraceId());
     }
 
+    // Documents that neither Micrometer nor OTel context clearing helps when using Observation API -- this is WHY EmbabelTracingObservationHandler exists
     @Test
     @DisplayName("Spring Observation API CANNOT create root spans with context clearing")
     void springObservation_cannotCreateRootSpans_documentedLimitation() {
@@ -298,6 +303,7 @@ class SpringObservationProofOfConceptTest {
                 .isEqualTo(bgSpanData.getSpanId());
     }
 
+    // Verifies that sequential requests each get separate trace IDs (no trace leaking between requests)
     @Test
     @DisplayName("Multiple requests should each get their own trace ID")
     void multipleRequests_shouldEachGetOwnTraceId() {
@@ -388,6 +394,7 @@ class SpringObservationProofOfConceptTest {
                 .isEqualTo(request2Span.getSpanId());
     }
 
+    // Verifies that low/high cardinality key-values become OTel span attributes
     @Test
     @DisplayName("Observation attributes should be converted to span tags")
     void observationAttributes_shouldBeConvertedToSpanTags() {

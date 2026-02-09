@@ -68,6 +68,16 @@ public class ChatModelObservationFilter implements ObservationFilter {
         this.maxAttributeLength = maxAttributeLength;
     }
 
+    /**
+     * Enriches a {@link ChatModelObservationContext} with GenAI semantic convention key-values.
+     *
+     * <p>Adds low-cardinality keys for model names and operation type, and high-cardinality
+     * keys for hyperparameters, token usage, prompt content and completion content.
+     * Non-ChatModel contexts are returned unchanged.
+     *
+     * @param context the observation context to enrich
+     * @return the enriched context (same instance)
+     */
     @Override
     @NotNull
     public Observation.Context map(@NotNull Observation.Context context) {
@@ -139,6 +149,12 @@ public class ChatModelObservationFilter implements ObservationFilter {
         return context;
     }
 
+    /**
+     * Extracts the user prompt from the chat request instructions.
+     * Formats each message as {@code [MESSAGE_TYPE]: text}, joined by newlines.
+     *
+     * @return the formatted prompt string, or {@code null} if no instructions are available
+     */
     private String extractPrompt(ChatModelObservationContext chatContext) {
         var request = chatContext.getRequest();
         if (request == null) {
@@ -161,6 +177,11 @@ public class ChatModelObservationFilter implements ObservationFilter {
         return sb.toString();
     }
 
+     /**
+     * Extracts the LLM completion text from the chat response.
+     *
+     * @return the completion text, or {@code null} if the response or its output is unavailable
+     */
     private String extractCompletion(ChatModelObservationContext chatContext) {
         var response = chatContext.getResponse();
         if (response == null) {
@@ -175,6 +196,11 @@ public class ChatModelObservationFilter implements ObservationFilter {
         return result.getOutput().getText();
     }
 
+    /**
+     * Truncates a value to {@link #maxAttributeLength}, appending "..." if truncated.
+     *
+     * @return the truncated string, or empty string if {@code null}
+     */
     private String truncate(String value) {
         if (value == null) {
             return "";

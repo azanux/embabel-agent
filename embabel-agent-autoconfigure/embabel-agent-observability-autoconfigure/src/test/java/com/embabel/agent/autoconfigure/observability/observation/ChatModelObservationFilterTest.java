@@ -48,6 +48,9 @@ import static org.mockito.Mockito.mock;
 
 /**
  * Tests for ChatModelObservationFilter.
+ * Unit tests verify prompt/completion extraction and truncation.
+ * Integration tests verify that ChatModel observations are correctly parented
+ * in the span hierarchy using a real OTel stack.
  */
 class ChatModelObservationFilterTest {
 
@@ -177,7 +180,8 @@ class ChatModelObservationFilterTest {
 
         @BeforeEach
         void setUpHierarchyTests() {
-            // In-memory exporter captures spans for assertions
+            // Wire up a real OTel SDK -> Micrometer bridge -> ObservationRegistry pipeline
+            // so span parent-child relationships can be verified against InMemorySpanExporter.
             spanExporter = InMemorySpanExporter.create();
 
             // Configure OpenTelemetry SDK

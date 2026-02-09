@@ -49,6 +49,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -60,6 +61,9 @@ import static org.mockito.Mockito.*;
  * agent lifecycle, actions, goals, tools, planning, state transitions.
  */
 class EmbabelFullObservationEventListenerTest {
+
+    // Counter for generating unique interactionIds across test methods
+    private static final AtomicInteger interactionCounter = new AtomicInteger(0);
 
     // OpenTelemetry components for capturing spans
     private InMemorySpanExporter spanExporter;
@@ -73,7 +77,8 @@ class EmbabelFullObservationEventListenerTest {
 
     @BeforeEach
     void setUp() {
-        // In-memory exporter captures spans for assertions
+        // Wire up real OTel SDK -> Micrometer bridge -> EmbabelTracingObservationHandler -> ObservationRegistry.
+        // Spans are captured in InMemorySpanExporter for assertions.
         spanExporter = InMemorySpanExporter.create();
 
         // Configure OpenTelemetry SDK with simple span processor
@@ -98,7 +103,7 @@ class EmbabelFullObservationEventListenerTest {
         tracer = new OtelTracer(otelTracer, otelCurrentTraceContext, event -> {}, baggageManager);
 
         // Create observation handler and registry
-        handler = new EmbabelTracingObservationHandler(tracer, otelTracer);
+        handler = new EmbabelTracingObservationHandler(tracer);
         observationRegistry = ObservationRegistry.create();
         observationRegistry.observationConfig().observationHandler(handler);
 
@@ -855,6 +860,8 @@ class EmbabelFullObservationEventListenerTest {
      * A mock Result class that mimics Kotlin's Result<T>.
      * Provides getOrNull() and exceptionOrNull() methods that the listeners call via reflection.
      */
+    // Mimics Kotlin's Result<T> which is an inline class. The listener extracts
+    // getOrNull()/exceptionOrNull() via reflection, so we provide a compatible structure.
     static class MockResult {
         private final Object successValue;
         private final Throwable error;
@@ -894,6 +901,9 @@ class EmbabelFullObservationEventListenerTest {
 
     /**
      * Creates a real LlmRequestEvent (Kotlin final class — cannot be reliably mocked).
+     * Each call generates a unique interactionId to support parallel LLM call tests.
+     * Uses reflection to call LlmInteraction.from() since the method name is mangled
+     * due to the InteractionId inline value class parameter.
      */
     private <O> LlmRequestEvent<O> createMockLlmRequestEvent(
             AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
@@ -912,13 +922,14 @@ class EmbabelFullObservationEventListenerTest {
         llmOptions.setMaxTokens(1000);
         llmOptions.setTopP(0.9);
 
-        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+        LlmInteraction interaction = createInteractionWithUniqueId(llmOptions);
 
         return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, Collections.emptyList());
     }
 
     /**
      * Creates a real LlmRequestEvent with specific messages.
+     * Each call generates a unique interactionId to support parallel LLM call tests.
      */
     private <O> LlmRequestEvent<O> createMockLlmRequestEventWithMessages(
             AgentProcess process, String actionName, String modelName, Class<O> outputClass,
@@ -938,7 +949,7 @@ class EmbabelFullObservationEventListenerTest {
         llmOptions.setMaxTokens(1000);
         llmOptions.setTopP(0.9);
 
-        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+        LlmInteraction interaction = createInteractionWithUniqueId(llmOptions);
 
         return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, messages);
     }
@@ -955,6 +966,9 @@ class EmbabelFullObservationEventListenerTest {
 
     // --- Parallel LLM/Tool-loop Tests ---
 
+    // Integration tests for concurrent LLM calls. Verifies that parallel LLM request/response
+    // events on different threads produce distinct spans, and that tool-loops are correctly
+    // parented under their corresponding LLM span via interactionId.
     @Nested
     @DisplayName("Parallel LLM Call Tests")
     class ParallelLlmCallTests {
@@ -1042,7 +1056,7 @@ class EmbabelFullObservationEventListenerTest {
         }
 
         @Test
-        @DisplayName("Tool loop should be parented under LLM span via threadId-based map lookup")
+        @DisplayName("Tool loop should be parented under LLM span via interactionId-based map lookup")
         void toolLoopParent_shouldBeUnderLlmSpan() {
             properties.setTraceToolLoop(true);
             properties.setTraceLlmCalls(true);
@@ -1057,10 +1071,13 @@ class EmbabelFullObservationEventListenerTest {
             LlmRequestEvent<?> llmReq = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
             listener.onProcessEvent(llmReq);
 
-            // Start tool loop — should be parented under the LLM observation via threadId-based map lookup
+            // Use the LLM request's actual interactionId (matches production behavior)
+            String interactionId = llmReq.getInteraction().getId();
+
+            // Start tool loop — should be parented under the LLM observation via interactionId-based map lookup
             ToolLoopStartEvent tls = new ToolLoopStartEvent(
                     process, actionStart.getAction(),
-                    List.of("tool1"), 10, "interaction-1", String.class);
+                    List.of("tool1"), 10, interactionId, String.class);
             listener.onProcessEvent(tls);
 
             // Complete tool loop, LLM, action, agent
@@ -1170,6 +1187,24 @@ class EmbabelFullObservationEventListenerTest {
             String outputValue = llmSpan.getAttributes().get(
                     io.opentelemetry.api.common.AttributeKey.stringKey("output.value"));
             assertThat(outputValue).isNull();
+        }
+    }
+
+    /**
+     * Creates a LlmInteraction with a unique interactionId.
+     * Uses reflection to call the mangled LlmInteraction.from(LlmCall, String)
+     * since InteractionId is a Kotlin inline value class, which mangles the method name in bytecode.
+     */
+    private static LlmInteraction createInteractionWithUniqueId(LlmOptions llmOptions) {
+        String uniqueId = "interaction-" + interactionCounter.incrementAndGet();
+        try {
+            var llmCall = com.embabel.agent.core.support.LlmCall.Companion.using(llmOptions);
+            var fromMethod = LlmInteraction.class.getDeclaredMethod("from-5V0vsfg",
+                    com.embabel.agent.core.support.LlmCall.class, String.class);
+            fromMethod.setAccessible(true);
+            return (LlmInteraction) fromMethod.invoke(null, llmCall, uniqueId);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create LlmInteraction with unique ID: " + uniqueId, e);
         }
     }
 

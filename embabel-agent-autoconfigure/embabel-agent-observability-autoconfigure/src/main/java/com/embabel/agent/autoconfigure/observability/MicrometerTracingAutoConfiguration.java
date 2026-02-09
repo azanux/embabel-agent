@@ -94,7 +94,7 @@ public class MicrometerTracingAutoConfiguration {
                     properties.getTracerVersion()
             );
 
-            EmbabelTracingObservationHandler handler = new EmbabelTracingObservationHandler(tracer, otelTracer);
+            EmbabelTracingObservationHandler handler = new EmbabelTracingObservationHandler(tracer);
             registry.observationConfig().observationHandler(handler);
 
             log.info("Registered EmbabelTracingObservationHandler for Spring Observation API integration");

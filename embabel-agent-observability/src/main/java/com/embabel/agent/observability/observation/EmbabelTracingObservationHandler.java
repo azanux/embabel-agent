@@ -38,7 +38,6 @@ public class EmbabelTracingObservationHandler
     private static final Logger log = LoggerFactory.getLogger(EmbabelTracingObservationHandler.class);
 
     private final Tracer tracer;
-    private final io.opentelemetry.api.trace.Tracer otelTracer;
 
     private final Map<String, Span> activeAgentSpans = new ConcurrentHashMap<>();
     private final Map<String, Span> activeActionSpans = new ConcurrentHashMap<>();
@@ -50,11 +49,9 @@ public class EmbabelTracingObservationHandler
      * Creates a new handler.
      *
      * @param tracer     the Micrometer tracer
-     * @param otelTracer the OpenTelemetry tracer
      */
-    public EmbabelTracingObservationHandler(Tracer tracer, io.opentelemetry.api.trace.Tracer otelTracer) {
+    public EmbabelTracingObservationHandler(Tracer tracer) {
         this.tracer = tracer;
-        this.otelTracer = otelTracer;
         log.info("EmbabelTracingObservationHandler initialized");
     }
 
@@ -230,6 +227,11 @@ public class EmbabelTracingObservationHandler
 
             case AGENT_PROCESS:
                 if (context.getParentRunId() != null) {
+                    // Prefer parent's active action span (sub-agent runs inside an action)
+                    Span parentActionSpan = activeActionSpans.get(context.getParentRunId());
+                    if (parentActionSpan != null) {
+                        return parentActionSpan;
+                    }
                     return activeAgentSpans.get(context.getParentRunId());
                 }
                 return null;

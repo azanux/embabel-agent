@@ -36,7 +36,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /**
- * Tests for ObservabilityAutoConfiguration.
+ * Tests conditional bean creation in ObservabilityAutoConfiguration.
+ * Verifies that beans are created/skipped based on properties, available dependencies,
+ * and implementation type.
  *
  * @since 0.3.4
  */
@@ -44,6 +46,8 @@ class ObservabilityAutoConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(ObservabilityAutoConfiguration.class));
+
+    // --- Event Listener creation and fallback chain ---
 
     @Test
     void eventListener_shouldBeCreated_byDefault() {
@@ -74,6 +78,8 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
+    // --- ChatModel filter ---
+
     @Test
     void chatModelFilter_shouldBeCreated_byDefault() {
         contextRunner
@@ -92,6 +98,8 @@ class ObservabilityAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(ChatModelObservationFilter.class);
                 });
     }
+
+    // --- Properties binding ---
 
     @Test
     void propertiesBean_shouldBeCreated() {
@@ -147,6 +155,8 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
+    // --- MDC propagation ---
+
     @Test
     void mdcPropagationListener_shouldBeCreated_byDefault() {
         contextRunner
@@ -165,6 +175,8 @@ class ObservabilityAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(MdcPropagationEventListener.class);
                 });
     }
+
+    // --- HTTP detail tracing ---
 
     @Test
     void httpBodyCachingFilter_shouldNotBeCreated_byDefault() {
@@ -204,6 +216,8 @@ class ObservabilityAutoConfigurationTest {
                 });
     }
 
+    // --- Metrics listener ---
+
     @Test
     void metricsListener_shouldBeCreated_whenMeterRegistryAvailable() {
         contextRunner
@@ -231,6 +245,8 @@ class ObservabilityAutoConfigurationTest {
                     assertThat(context).doesNotHaveBean(EmbabelMetricsEventListener.class);
                 });
     }
+
+    // --- Test configurations providing mock beans ---
 
     @Configuration
     static class OpenTelemetryConfig {

@@ -56,7 +56,7 @@ public class ObservabilityProperties {
     private String tracerName = "embabel-agent";
 
     /** Tracer version. */
-    private String tracerVersion = "0.3.3";
+    private String tracerVersion = "0.3.4";
 
     /** Max attribute length before truncation. */
     private int maxAttributeLength = 4000;
@@ -94,8 +94,8 @@ public class ObservabilityProperties {
     /** Trace object binding (verbose, disabled by default). */
     private boolean traceObjectBinding = false;
 
-    /** Trace HTTP request/response details including bodies, headers and params (disabled by default). */
-    private boolean traceHttpDetails = false;
+    /** Trace HTTP request/response details including bodies, headers and params (enabled by default). */
+    private boolean traceHttpDetails = true;
 
     /** Enable @Tracked annotation aspect for custom operation tracking. */
     private boolean traceTrackedOperations = true;

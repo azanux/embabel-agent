@@ -18,8 +18,6 @@ package com.embabel.agent.observability.observation;
 import com.embabel.agent.api.event.*;
 import com.embabel.agent.core.Action;
 import com.embabel.agent.core.AgentProcess;
-import com.embabel.agent.core.Blackboard;
-import com.embabel.agent.core.IoBinding;
 import com.embabel.agent.core.ToolGroupMetadata;
 import com.embabel.agent.event.AgentProcessRagEvent;
 import com.embabel.agent.event.RagEvent;
@@ -54,7 +52,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * it doesn't depend on the {@code DefaultTracingObservationHandler} being properly
  * registered and configured.
  *
- * @author Quantpulsar 2025-2026
  * @see ObservabilityProperties
  */
 public class EmbabelSpringObservationEventListener implements AgenticEventListener {
@@ -204,14 +201,15 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         String parentId = process.getParentId();
         boolean isSubagent = parentId != null && !parentId.isEmpty();
 
-        String goalName = extractGoalName(process);
+        String goalName = ObservationUtils.extractGoalName(process);
         String plannerType = process.getProcessOptions().getPlannerType().name();
-        String input = getBlackboardSnapshot(process);
+        String input = ObservationUtils.getBlackboardSnapshot(process);
 
         // Determine parent span for hierarchy
+        // Prefer parent's active action span (sub-agent runs inside an action)
         Span parentSpan = null;
         if (isSubagent) {
-            SpanContext parentCtx = activeSpans.get("agent:" + parentId);
+            SpanContext parentCtx = findParentSpan(parentId);
             if (parentCtx != null) {
                 parentSpan = parentCtx.span;
             }
@@ -251,7 +249,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
 
         if (!input.isEmpty()) {
             span.tag("input.value", truncate(input));
-            inputSnapshots.put("agent:" + runId, input);
+            inputSnapshots.put(ObservationKeys.agentKey(runId), input);
         }
 
         // Initialize plan iteration counter
@@ -262,7 +260,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // This allows Spring AI to find it via tracer.currentSpan()
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        activeSpans.put("agent:" + runId, new SpanContext(span, scope));
+        activeSpans.put(ObservationKeys.agentKey(runId), new SpanContext(span, scope));
 
         log.debug("Started span for agent: {} (runId: {})", agentName, runId);
     }
@@ -273,7 +271,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
     private void onAgentProcessCompleted(AgentProcessCompletedEvent event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String key = "agent:" + runId;
+        var key = ObservationKeys.agentKey(runId);
 
         SpanContext ctx = activeSpans.remove(key);
         inputSnapshots.remove(key);
@@ -282,7 +280,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         if (ctx != null) {
             ctx.span.tag("embabel.agent.status", "completed");
 
-            String output = getBlackboardSnapshot(process);
+            String output = ObservationUtils.getBlackboardSnapshot(process);
             if (!output.isEmpty()) {
                 ctx.span.tag("output.value", truncate(output));
                 ctx.span.tag("embabel.agent.output", truncate(output));
@@ -307,7 +305,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
     private void onAgentProcessFailed(AgentProcessFailedEvent event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String key = "agent:" + runId;
+        var key = ObservationKeys.agentKey(runId);
 
         SpanContext ctx = activeSpans.remove(key);
         inputSnapshots.remove(key);
@@ -339,10 +337,10 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         Action action = event.getAction();
         String actionName = action.getName();
         String shortName = action.shortName();
-        String input = getActionInputs(action, process);
+        String input = ObservationUtils.getActionInputs(action, process);
 
         // Get parent span - prefer agent span
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         // Create child span
         Span span;
@@ -360,7 +358,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.tag("embabel.event.type", "action");
         span.tag("gen_ai.operation.name", "execute_action");
 
-        String key = "action:" + runId + ":" + actionName;
+        var key = ObservationKeys.actionKey(runId, actionName);
         if (!input.isEmpty()) {
             span.tag("input.value", truncate(input));
             inputSnapshots.put(key, input);
@@ -381,7 +379,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
         String actionName = event.getAction().getName();
-        String key = "action:" + runId + ":" + actionName;
+        var key = ObservationKeys.actionKey(runId, actionName);
 
         SpanContext ctx = activeSpans.remove(key);
         inputSnapshots.remove(key);
@@ -391,7 +389,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             ctx.span.tag("embabel.action.status", statusName);
             ctx.span.tag("embabel.action.duration_ms", String.valueOf(event.getRunningTime().toMillis()));
 
-            String output = getBlackboardSnapshot(process);
+            String output = ObservationUtils.getBlackboardSnapshot(process);
             if (!output.isEmpty()) {
                 ctx.span.tag("output.value", truncate(output));
             }
@@ -427,7 +425,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
                 : goalName;
 
         // Get parent span
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -440,7 +438,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.tag("embabel.goal.short_name", shortGoalName);
         span.tag("embabel.event.type", "goal_achieved");
 
-        String snapshot = getBlackboardSnapshot(process);
+        String snapshot = ObservationUtils.getBlackboardSnapshot(process);
         if (!snapshot.isEmpty()) {
             span.tag("input.value", truncate(snapshot));
         }
@@ -472,17 +470,18 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // This ensures tool calls are nested under LLM calls
         Span currentSpan = tracer.currentSpan();
 
+        var toolSpan = ObservationKeys.toolSpanName(toolName);
         Span span;
         if (currentSpan != null) {
             // Parent is the current span (ChatClient or Action)
-            span = tracer.nextSpan(currentSpan).name("tool:" + toolName);
+            span = tracer.nextSpan(currentSpan).name(toolSpan);
         } else {
             // Fallback to Embabel hierarchy
             SpanContext parentCtx = findParentSpan(runId);
             if (parentCtx != null) {
-                span = tracer.nextSpan(parentCtx.span).name("tool:" + toolName);
+                span = tracer.nextSpan(parentCtx.span).name(toolSpan);
             } else {
-                span = tracer.nextSpan().name("tool:" + toolName);
+                span = tracer.nextSpan().name(toolSpan);
             }
         }
 
@@ -524,7 +523,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
 
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        activeSpans.put("tool:" + runId + ":" + toolName, new SpanContext(span, scope));
+        activeSpans.put(ObservationKeys.toolKey(runId, toolName), new SpanContext(span, scope));
 
         log.debug("Started span for tool: {} (runId: {}, correlationId: {})",
                 toolName, runId, correlationId);
@@ -538,7 +537,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
         String toolName = event.getRequest().getTool();
-        String key = "tool:" + runId + ":" + toolName;
+        var key = ObservationKeys.toolKey(runId, toolName);
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -546,7 +545,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             ctx.span.tag("embabel.tool.duration_ms", String.valueOf(event.getRunningTime().toMillis()));
 
             // Extract tool result using reflection (Kotlin Result has mangled method names)
-            Object toolResult = extractToolResult(event);
+            Object toolResult = ObservationUtils.extractToolResult(event);
             if (toolResult != null) {
                 String truncatedResult = truncate(toolResult.toString());
                 ctx.span.tag("output.value", truncatedResult);
@@ -554,7 +553,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
                 ctx.span.tag("embabel.tool.status", "success");
             } else {
                 // Check if there was an error
-                Throwable error = extractToolError(event);
+                Throwable error = ObservationUtils.extractToolError(event);
                 if (error != null) {
                     ctx.span.tag("embabel.tool.status", "error");
                     ctx.span.tag("embabel.tool.error.type", error.getClass().getSimpleName());
@@ -573,101 +572,6 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         }
     }
 
-    /**
-     * Extracts the successful result from a Kotlin Result.
-     * Calls event.getResult().getOrNull() via reflection.
-     *
-     * Based on working Java example:
-     * String outputJson = response.getResult().getOrNull();
-     */
-    private Object extractToolResult(ToolCallResponseEvent event) {
-        try {
-            // Find getResult method - Kotlin mangles it as getResult-XXXXX for value classes
-            java.lang.reflect.Method getResultMethod = null;
-            for (java.lang.reflect.Method m : ToolCallResponseEvent.class.getMethods()) {
-                if (m.getName().startsWith("getResult") && m.getParameterCount() == 0) {
-                    getResultMethod = m;
-                    break;
-                }
-            }
-
-            if (getResultMethod == null) {
-                log.trace("getResult method not found on ToolCallResponseEvent");
-                return null;
-            }
-
-            Object result = getResultMethod.invoke(event);
-
-            if (result == null) {
-                return null;
-            }
-
-            // Kotlin's Result<T> is an inline/value class - at runtime it's unboxed
-            // So getResult() returns the actual value directly (e.g., String "74")
-            // NOT a Result wrapper object. Just return it directly.
-            // Only try getOrNull() if the result has that method (for backward compatibility)
-            try {
-                java.lang.reflect.Method getOrNullMethod = result.getClass().getMethod("getOrNull");
-                return getOrNullMethod.invoke(result);
-            } catch (NoSuchMethodException e) {
-                // Result is already the unwrapped value (inline class behavior)
-                return result;
-            }
-        } catch (Exception e) {
-            log.trace("Could not extract tool result: {}", e.getMessage());
-        }
-        return null;
-    }
-
-    /**
-     * Extracts the error from a Kotlin Result.
-     * Calls event.getResult().exceptionOrNull() via reflection.
-     */
-    private Throwable extractToolError(ToolCallResponseEvent event) {
-        try {
-            // Find getResult method - Kotlin mangles it as getResult-XXXXX for value classes
-            java.lang.reflect.Method getResultMethod = null;
-            for (java.lang.reflect.Method m : ToolCallResponseEvent.class.getMethods()) {
-                if (m.getName().startsWith("getResult") && m.getParameterCount() == 0) {
-                    getResultMethod = m;
-                    break;
-                }
-            }
-
-            if (getResultMethod == null) {
-                log.trace("getResult method not found on ToolCallResponseEvent");
-                return null;
-            }
-
-            Object result = getResultMethod.invoke(event);
-
-            if (result == null) {
-                return null;
-            }
-
-            // Check if result is already a Throwable (inline class unwrapped to error)
-            if (result instanceof Throwable) {
-                return (Throwable) result;
-            }
-
-            // Try exceptionOrNull() if available (for wrapped Result objects)
-            try {
-                java.lang.reflect.Method exceptionOrNullMethod = result.getClass().getMethod("exceptionOrNull");
-                Object error = exceptionOrNullMethod.invoke(result);
-                if (error instanceof Throwable) {
-                    return (Throwable) error;
-                }
-            } catch (NoSuchMethodException e) {
-                // Result is already the unwrapped value (inline class behavior)
-                // If it's not a Throwable, there's no error
-                return null;
-            }
-        } catch (Exception e) {
-            log.trace("Could not extract tool error: {}", e.getMessage());
-        }
-        return null;
-    }
-
     // ==================== Planning ====================
 
     /**
@@ -678,7 +582,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         String runId = process.getId();
         String plannerType = process.getProcessOptions().getPlannerType().name();
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -715,7 +619,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         String spanName = isReplanning ? "planning:replanning" : "planning:formulated";
         String displayName = isReplanning ? "Replanning (iteration " + iteration + ")" : "Plan Formulated";
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -735,7 +639,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
 
         if (plan != null) {
             span.tag("embabel.plan.actions_count", String.valueOf(plan.getActions().size()));
-            span.tag("output.value", truncate(formatPlanSteps(plan)));
+            span.tag("output.value", truncate(ObservationUtils.formatPlanSteps(plan)));
             if (plan.getGoal() != null) {
                 span.tag("embabel.plan.goal", plan.getGoal().getName());
             }
@@ -755,7 +659,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -786,7 +690,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
 
         String stateName = newState != null ? newState.getClass().getSimpleName() : "Unknown";
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -818,7 +722,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -831,7 +735,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.tag("embabel.agent.run_id", runId);
         span.tag("embabel.lifecycle.state", state);
 
-        String snapshot = getBlackboardSnapshot(process);
+        String snapshot = ObservationUtils.getBlackboardSnapshot(process);
         if (!snapshot.isEmpty()) {
             span.tag("input.value", truncate(snapshot));
         }
@@ -846,7 +750,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
 
-        SpanContext parentCtx = activeSpans.get("agent:" + runId);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
 
         Span span;
         if (parentCtx != null) {
@@ -859,7 +763,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         span.tag("embabel.agent.run_id", runId);
         span.tag("embabel.lifecycle.state", "STUCK");
 
-        String snapshot = getBlackboardSnapshot(process);
+        String snapshot = ObservationUtils.getBlackboardSnapshot(process);
         if (!snapshot.isEmpty()) {
             span.tag("input.value", truncate(snapshot));
         }
@@ -956,27 +860,29 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // Find parent: prefer LLM span (by interactionId), then action, fallback to agent.
         // interactionId is shared between LlmRequestEvent and ToolLoopStartEvent and is unique per LLM call.
         // This works even when events fire on different threads (e.g., CompletableFuture.supplyAsync).
-        var llmKey = "llm:" + runId + ":" + interactionId;
+        var llmKey = ObservationKeys.llmKey(runId, interactionId);
         SpanContext llmCtx = activeSpans.get(llmKey);
+        var toolLoopName = ObservationKeys.toolLoopSpanName(interactionId);
         String resolvedParent;
         Span span;
         if (llmCtx != null) {
-            span = tracer.nextSpan(llmCtx.span).name("tool-loop:" + interactionId);
+            span = tracer.nextSpan(llmCtx.span).name(toolLoopName);
             resolvedParent = "llm (key=" + llmKey + ")";
         } else {
             // Fallback to action span, then agent span
-            var actionKey = "action:" + runId + ":" + actionName;
+            var actionKey = ObservationKeys.actionKey(runId, actionName);
             SpanContext parentCtx = activeSpans.get(actionKey);
             if (parentCtx != null) {
                 resolvedParent = "action (key=" + actionKey + ")";
             } else {
-                parentCtx = activeSpans.get("agent:" + runId);
-                resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE (using tracer.nextSpan())";
+                var agentKey = ObservationKeys.agentKey(runId);
+                parentCtx = activeSpans.get(agentKey);
+                resolvedParent = parentCtx != null ? "agent (key=" + agentKey + ")" : "NONE (using tracer.nextSpan())";
             }
             if (parentCtx != null) {
-                span = tracer.nextSpan(parentCtx.span).name("tool-loop:" + interactionId);
+                span = tracer.nextSpan(parentCtx.span).name(toolLoopName);
             } else {
-                span = tracer.nextSpan().name("tool-loop:" + interactionId);
+                span = tracer.nextSpan().name(toolLoopName);
             }
         }
         log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
@@ -992,7 +898,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // CRITICAL: Start span and put in scope so Micrometer observation becomes child
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        activeSpans.put("tool-loop:" + runId + ":" + interactionId, new SpanContext(span, scope));
+        activeSpans.put(ObservationKeys.toolLoopKey(runId, interactionId), new SpanContext(span, scope));
 
         log.debug("Started span for tool loop: {} (runId: {})", interactionId, runId);
     }
@@ -1004,7 +910,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        var key = "tool-loop:" + runId + ":" + interactionId;
+        var key = ObservationKeys.toolLoopKey(runId, interactionId);
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1032,17 +938,17 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         String modelName = event.getLlmMetadata().getName();
 
         // Find parent: prefer action span, fallback to agent span
-        String actionKey = "action:" + runId + ":" + actionName;
-        SpanContext parentCtx = activeSpans.get(actionKey);
+        SpanContext parentCtx = activeSpans.get(ObservationKeys.actionKey(runId, actionName));
         if (parentCtx == null) {
-            parentCtx = activeSpans.get("agent:" + runId);
+            parentCtx = activeSpans.get(ObservationKeys.agentKey(runId));
         }
 
+        var llmSpanName = ObservationKeys.LLM_PREFIX + modelName;
         Span span;
         if (parentCtx != null) {
-            span = tracer.nextSpan(parentCtx.span).name("llm:" + modelName);
+            span = tracer.nextSpan(parentCtx.span).name(llmSpanName);
         } else {
-            span = tracer.nextSpan().name("llm:" + modelName);
+            span = tracer.nextSpan().name(llmSpanName);
         }
 
         span.tag("gen_ai.operation.name", "chat");
@@ -1073,7 +979,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         Tracer.SpanInScope scope = tracer.withSpan(span);
         // Use interactionId as discriminant — unique per LLM call and shared with ToolLoopStartEvent.
         // This works even when events fire on different threads (CompletableFuture.supplyAsync).
-        activeSpans.put("llm:" + runId + ":" + event.getInteraction().getId(), new SpanContext(span, scope));
+        activeSpans.put(ObservationKeys.llmKey(runId, event.getInteraction().getId()), new SpanContext(span, scope));
 
         log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
@@ -1085,7 +991,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
         // Match by interactionId — same as stored in onLlmRequest
-        String key = "llm:" + runId + ":" + event.getRequest().getInteraction().getId();
+        var key = ObservationKeys.llmKey(runId, event.getRequest().getInteraction().getId());
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1189,7 +1095,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
     private void onProcessKilled(ProcessKilledEvent event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String key = "agent:" + runId;
+        var key = ObservationKeys.agentKey(runId);
 
         SpanContext ctx = activeSpans.remove(key);
         inputSnapshots.remove(key);
@@ -1296,115 +1202,17 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
      */
     private SpanContext findParentSpan(String runId) {
         // First try to find an active action span
+        var actionPrefix = ObservationKeys.ACTION_PREFIX + runId;
         for (String key : activeSpans.keySet()) {
-            if (key.startsWith("action:" + runId)) {
+            if (key.startsWith(actionPrefix)) {
                 return activeSpans.get(key);
             }
         }
         // Fall back to agent span
-        return activeSpans.get("agent:" + runId);
+        return activeSpans.get(ObservationKeys.agentKey(runId));
     }
 
-    /**
-     * Extracts goal name from process or agent configuration.
-     */
-    private String extractGoalName(AgentProcess process) {
-        if (process.getGoal() != null) {
-            return process.getGoal().getName();
-        } else if (!process.getAgent().getGoals().isEmpty()) {
-            return process.getAgent().getGoals().iterator().next().getName();
-        }
-        return "unknown";
-    }
-
-    /**
-     * Creates a string representation of all objects on the blackboard.
-     */
-    private String getBlackboardSnapshot(AgentProcess process) {
-        var objects = process.getBlackboard().getObjects();
-        if (objects == null || objects.isEmpty()) {
-            return "";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        for (Object obj : objects) {
-            if (obj != null) {
-                if (sb.length() > 0) sb.append("\n---\n");
-                sb.append(obj.getClass().getSimpleName()).append(": ");
-                sb.append(obj.toString());
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Extracts the declared inputs for an action from the blackboard.
-     * Uses action.getInputs() to get the IoBinding declarations, then resolves
-     * each binding from the blackboard using getValue().
-     *
-     * @param action the action being executed
-     * @param process the agent process containing the blackboard
-     * @return formatted string of action inputs, or empty string if no inputs
-     */
-    private String getActionInputs(Action action, AgentProcess process) {
-        var inputs = action.getInputs();
-        if (inputs == null || inputs.isEmpty()) {
-            return "";
-        }
-
-        Blackboard blackboard = process.getBlackboard();
-        StringBuilder sb = new StringBuilder();
-
-        for (IoBinding input : inputs) {
-            // IoBinding is a Kotlin value class - parse the raw value "name:type"
-            String bindingValue = input.getValue();
-            String name;
-            String type;
-            if (bindingValue.contains(":")) {
-                String[] parts = bindingValue.split(":", 2);
-                name = parts[0];
-                type = parts[1];
-            } else {
-                name = "it"; // DEFAULT_BINDING
-                type = bindingValue;
-            }
-
-            Object value = blackboard.getValue(name, type, process.getAgent());
-
-            if (value != null) {
-                if (sb.length() > 0) sb.append("\n---\n");
-                sb.append(name).append(" (").append(type).append("): ");
-                sb.append(value.toString());
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Formats plan actions as numbered list with goal.
-     */
-    private String formatPlanSteps(Plan plan) {
-        if (plan == null || plan.getActions() == null || plan.getActions().isEmpty()) {
-            return "[]";
-        }
-        StringBuilder sb = new StringBuilder();
-        int index = 1;
-        for (var action : plan.getActions()) {
-            if (sb.length() > 0) sb.append("\n");
-            sb.append(index++).append(". ").append(action.getName());
-        }
-        if (plan.getGoal() != null) {
-            sb.append("\n-> Goal: ").append(plan.getGoal().getName());
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Truncates string to configured max length for span attributes.
-     */
     private String truncate(String value) {
-        if (value == null) return "";
-        int maxLength = properties.getMaxAttributeLength();
-        return value.length() > maxLength ? value.substring(0, maxLength) + "..." : value;
+        return ObservationUtils.truncate(value, properties.getMaxAttributeLength());
     }
 }

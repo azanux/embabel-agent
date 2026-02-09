@@ -114,7 +114,7 @@ class ObservabilityToolCallbackIntegrationTest {
         // 1. EmbabelTracingObservationHandler for EmbabelObservationContext
         // 2. NonEmbabelTracingObservationHandler for standard contexts (like from ObservabilityToolCallback)
         //    This handler excludes EmbabelObservationContext to prevent conflicts
-        embabelHandler = new EmbabelTracingObservationHandler(tracer, otelTracer);
+        embabelHandler = new EmbabelTracingObservationHandler(tracer);
         nonEmbabelHandler = new NonEmbabelTracingObservationHandler(tracer);
 
         // Register both handlers - order matters!

@@ -31,6 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+/**
+ * Tests for {@link HttpBodyCachingFilter}.
+ * Verifies that the filter wraps request/response for body caching
+ * and runs at the correct priority in the filter chain.
+ */
 class HttpBodyCachingFilterTest {
 
     private final HttpBodyCachingFilter filter = new HttpBodyCachingFilter();
@@ -38,6 +43,8 @@ class HttpBodyCachingFilterTest {
     @Nested
     class Ordering {
 
+        // Must run before Spring's ServerHttpObservationFilter so that
+        // request/response are already wrapped when the observation is created
         @Test
         void shouldRunBeforeSpringObservationFilter() {
             assertThat(filter.getOrder()).isEqualTo(Ordered.HIGHEST_PRECEDENCE);
@@ -47,6 +54,8 @@ class HttpBodyCachingFilterTest {
     @Nested
     class WrapsBehavior {
 
+        // Verifies that a plain request and response are wrapped in
+        // ContentCaching* wrappers before being passed down the chain
         @Test
         void shouldWrapRequestWithContentCachingWrapper() throws ServletException, IOException {
             var request = new MockHttpServletRequest();
@@ -61,6 +70,9 @@ class HttpBodyCachingFilterTest {
             );
         }
 
+        // The ContentCachingResponseWrapper buffers the body internally.
+        // copyBodyToResponse() must be called in the finally block so that
+        // the client actually receives the response content.
         @Test
         void shouldCopyResponseBodyAfterFiltering() throws ServletException, IOException {
             var request = new MockHttpServletRequest();
@@ -78,6 +90,8 @@ class HttpBodyCachingFilterTest {
             assertThat(response.getContentAsString()).isEqualTo("hello");
         }
 
+        // If the request is already a ContentCachingRequestWrapper (e.g. another filter
+        // already wrapped it), the filter should pass it through as-is to avoid double wrapping
         @Test
         void shouldNotRewrapAlreadyWrappedRequest() throws ServletException, IOException {
             var request = new ContentCachingRequestWrapper(new MockHttpServletRequest());
@@ -89,6 +103,7 @@ class HttpBodyCachingFilterTest {
             verify(chain).doFilter(eq(request), any(ContentCachingResponseWrapper.class));
         }
 
+        // Same as above but for the response: if already wrapped, reuse the existing wrapper
         @Test
         void shouldNotRewrapAlreadyWrappedResponse() throws ServletException, IOException {
             var request = new MockHttpServletRequest();

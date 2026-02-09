@@ -50,6 +50,12 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
     private final ObservabilityProperties properties;
     private final AtomicInteger activeAgents = new AtomicInteger(0);
 
+    /**
+     * Creates a new metrics event listener and registers the {@code embabel.agent.active} gauge.
+     *
+     * @param registry   the Micrometer meter registry to publish metrics to
+     * @param properties observability configuration properties controlling metrics emission
+     */
     public EmbabelMetricsEventListener(MeterRegistry registry, ObservabilityProperties properties) {
         this.registry = registry;
         this.properties = properties;
@@ -58,6 +64,15 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
                 .register(registry);
     }
 
+    /**
+     * Dispatches agent process events to the appropriate metric recording method.
+     *
+     * <p>Increments/decrements the active-agents gauge on creation and terminal events.
+     * Records token usage and cost on completion or failure, tool errors on tool responses,
+     * and replanning counts on replan requests.
+     *
+     * @param event the agent process event to handle
+     */
     @Override
     public void onProcessEvent(AgentProcessEvent event) {
         if (!properties.isMetricsEnabled()) {
@@ -82,6 +97,9 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         }
     }
 
+    /**
+     * Increments the {@code embabel.agent.errors.total} counter, tagged with the agent name.
+     */
     private void recordAgentError(AgentProcess process) {
         String agentName = process.getAgent().getName();
         Counter.builder("embabel.agent.errors.total")
@@ -91,6 +109,12 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
                 .increment();
     }
 
+    /**
+     * Records LLM token usage and estimated cost from the completed agent process.
+     *
+     * <p>Publishes {@code embabel.llm.tokens.total} counters with {@code direction} tag
+     * ({@code input} / {@code output}) and {@code embabel.llm.cost.total} if cost &gt; 0.
+     */
     private void recordTokensAndCost(AgentProcess process) {
         String agentName = process.getAgent().getName();
         Usage usage = process.usage();
@@ -122,6 +146,10 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         }
     }
 
+    /**
+     * Increments {@code embabel.tool.errors.total} if the tool call result contains an error.
+     * The counter is tagged with the tool name. No-ops when the result is successful.
+     */
     private void recordToolError(ToolCallResponseEvent event) {
         Throwable error = extractToolError(event);
         if (error != null) {
@@ -134,6 +162,9 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         }
     }
 
+    /**
+     * Increments {@code embabel.planning.replanning.total}, tagged with the agent name.
+     */
     private void recordReplanning(AgentProcess process) {
         String agentName = process.getAgent().getName();
         Counter.builder("embabel.planning.replanning.total")

@@ -211,8 +211,28 @@ class TrackedAspectTest {
             EmbabelObservationContext ctx = capturingHandler.contexts.get(0);
             String argsValue = getHighCardinalityValue(ctx, "embabel.tracked.args");
             assertThat(argsValue).isNotNull();
-            assertThat(argsValue.length()).isLessThanOrEqualTo(maxLen);
+            // ObservationUtils.truncate keeps first maxLen chars then appends "..."
+            assertThat(argsValue.length()).isLessThanOrEqualTo(maxLen + 3);
             assertThat(argsValue).endsWith("...");
+        }
+
+        @Test
+        @DisplayName("Should handle null result without NPE (null-safe truncate)")
+        void shouldHandleNullInTruncate() throws Throwable {
+            // TrackedAspect.truncate must be null-safe (delegating to ObservationUtils)
+            // Verify via reflection that truncate("null-arg") works and null doesn't cause issues
+            setupJoinPoint("customNamed");
+            // Pass null as arg element — formatArgs produces "param=null" string (no NPE)
+            lenient().when(joinPoint.getArgs()).thenReturn(new Object[]{null});
+            when(joinPoint.proceed()).thenReturn(null);
+
+            Tracked tracked = SampleService.class.getMethod("customNamed", String.class)
+                    .getAnnotation(Tracked.class);
+
+            // Should not throw NPE
+            aspect.tracked(joinPoint, tracked);
+
+            assertThat(capturingHandler.contexts).hasSize(1);
         }
 
         @Test

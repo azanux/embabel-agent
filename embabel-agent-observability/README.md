@@ -190,25 +190,32 @@ Your agents are now fully traced. No code changes required.
 
 | Feature | Description |
 |---------|-------------|
-| **Agent Lifecycle Tracing** | Full trace of agent creation, execution, completion, and failures |
-| **Action Tracing** | Each action execution as a child span with duration and status |
-| **Tool Call Tracing** | Every tool invocation with input/output capture |
-| **LLM Call Integration** | Spring AI calls automatically appear as child spans |
-| **LLM Token Metrics** | Input/output token usage via Spring AI observations |
-| **Planning Events** | Track plan formulation and replanning iterations |
+| **Agent Lifecycle Tracing** | Full trace of agent creation, execution, completion, failures, and process kill |
+| **Sub-agent Hierarchy** | Proper parent-child span relationships for sub-agents |
+| **Action Tracing** | Each action execution as a child span with duration, status, and declared inputs |
+| **LLM Call Spans** | Dedicated spans per LLM interaction with model name, hyperparameters (`temperature`, `max_tokens`, `top_p`), provider, input messages, and output |
+| **Tool Loop Tracing** | Spans for tool loop execution with iteration count, max iterations, tool list, and replan status |
+| **Tool Call Tracing** | Every tool invocation with input/output capture, correlation ID, and tool group metadata |
+| **LLM Call Integration** | Spring AI ChatModel calls automatically appear as child spans via `ChatModelObservationFilter` |
+| **LLM Token Metrics** | Input/output token usage and cost via Spring AI observations |
+| **Planning Events** | Track plan formulation, replanning iterations, and replan requests with reasons |
+| **RAG Pipeline Tracing** | Full RAG event tracing: request, response, pipeline stages, and enhancement steps |
+| **Ranking Events** | Agent routing decisions: ranking requests, choices made (with score), and failures (with confidence cutoff) |
+| **Dynamic Agent Creation Tracing** | Platform events for dynamically created agents |
 | **State Transitions** | Monitor workflow state changes |
 | **Lifecycle States** | Visibility into WAITING, PAUSED, STUCK states |
 | **Multi-Exporter Support** | Send traces to multiple backends simultaneously |
 | **Automatic Metrics** | Duration and count metrics (Spring Observation mode) |
 | **Business Metrics** | Micrometer counters/gauges: active agents, LLM tokens, cost, errors, replanning |
+| **OpenTelemetry GenAI Semantic Conventions** | Consistent `gen_ai.*` attributes across all spans (`gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.tool.name`, etc.) |
+| **ChatModel Observation Filter** | Enriches Spring AI observations with prompts, completions, token counts, and model info |
 | **`@Tracked` Annotation** | Custom operation tracking with automatic span creation |
+| **MDC Log Correlation** | Automatic SLF4J MDC propagation of agent context (run ID, agent name, action name) |
 
 ### Coming Soon
 
 | Feature | Target |
 |---------|--------|
-| RAG Pipeline Tracing | v0.5.x |
-| Dynamic Agent Creation Tracing | v0.4.x |
 | Pre-built Grafana Dashboards | v1.0.x |
 
 ---
@@ -245,7 +252,7 @@ Your agents are now fully traced. No code changes required.
 | `embabel.observability.trace-ranking` | `true` | Trace ranking/selection events (agent routing) |
 | `embabel.observability.trace-dynamic-agent-creation` | `true` | Trace dynamic agent creation events |
 | `embabel.observability.trace-object-binding` | `false` | Trace object binding (verbose) |
-| `embabel.observability.trace-http-details` | `false` | Trace HTTP request/response details (bodies, headers) |
+| `embabel.observability.trace-http-details` | `true` | Trace HTTP request/response details (bodies, headers) |
 | `embabel.observability.trace-tracked-operations` | `true` | Enable/disable `@Tracked` annotation aspect |
 | `embabel.observability.mdc-propagation` | `true` | Propagate agent context into SLF4J MDC for log correlation |
 | `embabel.observability.metrics-enabled` | `true` | Enable/disable Micrometer business metrics |
@@ -270,6 +277,41 @@ Your agents are now fully traced. No code changes required.
 | `SPRING_OBSERVATION` | Yes | Yes | **Yes** |
 | `MICROMETER_TRACING` | Yes | No | |
 | `OPENTELEMETRY_DIRECT` | Yes | No | |
+
+### Automatic Implementation Selection
+
+The tracing implementation is **automatically selected** based on what is available in your classpath. You typically don't need to set `embabel.observability.implementation` manually — the autoconfiguration detects the richest available option and falls back gracefully:
+
+```
+SPRING_OBSERVATION  →  ObservationRegistry available?
+        │ yes                          │ no
+        ▼                              ▼
+  EmbabelFull               MICROMETER_TRACING  →  Micrometer Tracer available?
+  ObservationEvent                │ yes                          │ no
+  Listener                        ▼                              ▼
+  (traces + metrics)       EmbabelSpring                  EmbabelObservation
+                           ObservationEvent               EventListener
+                           Listener                       (OTel direct, fallback)
+                           (traces only)
+```
+
+| Your classpath includes | Bean auto-created | Implementation selected |
+|---|---|---|
+| `spring-boot-starter-actuator` + `micrometer-tracing-bridge-otel` | `ObservationRegistry` + `Tracer` | **SPRING_OBSERVATION** — `EmbabelFullObservationEventListener` + `EmbabelTracingObservationHandler` + `ChatModelObservationFilter` (traces + automatic metrics) |
+| `micrometer-tracing-bridge-otel` (without full actuator) | `Tracer` only | **MICROMETER_TRACING** — `EmbabelSpringObservationEventListener` (traces only) |
+| `opentelemetry-sdk` only (e.g. Langfuse SDK standalone) | `OpenTelemetry` only | **OPENTELEMETRY_DIRECT** — `EmbabelObservationEventListener` (traces only, no Spring dependency) |
+
+All three implementations produce the **same span hierarchy** with the **same attributes** — only the abstraction layer used to create spans differs.
+
+In `SPRING_OBSERVATION` mode, the `EmbabelTracingObservationHandler` converts Embabel observations into Micrometer spans with proper parent-child resolution (including cross-thread scenarios), while `ChatModelObservationFilter` enriches Spring AI ChatModel observations with GenAI semantic convention attributes (prompts, completions, token counts).
+
+To override the automatic selection, set the property explicitly:
+
+```yaml
+embabel:
+  observability:
+    implementation: MICROMETER_TRACING  # Force a specific implementation
+```
 
 ---
 
@@ -315,10 +357,12 @@ Your agents are now fully traced. No code changes required.
 ```
 
 **Key Points:**
-- Automatically captures all Embabel Agent events
-- Spring AI LLM calls appear as children of action spans
+- Automatically captures all Embabel Agent events (agent lifecycle, actions, LLM calls, tool loops, tools, planning, RAG, ranking, dynamic agents)
+- Spring AI LLM calls appear as children of action spans via `ChatModelObservationFilter` and `EmbabelTracingObservationHandler`
+- Proper parent-child hierarchy: Agent → Action → LLM → Tool Loop → ChatModel → Tool
 - Zero code instrumentation required
 - Multiple exporters can run simultaneously
+- OpenTelemetry GenAI semantic conventions (`gen_ai.*`) for interoperability with LLM observability platforms
 
 ---
 
@@ -328,12 +372,32 @@ Your agents are now fully traced. No code changes required.
 Agent: CustomerServiceAgent (trace root)
 ├── planning:formulated [iteration=1, actions=3]
 ├── Action: AnalyzeRequest
-│   └── ChatModel: gpt-4 (Spring AI)
-│       └── tool:searchKnowledgeBase
+│   ├── llm:gpt-4 [temperature=0.7, max_tokens=4096]
+│   │   ├── tool-loop:AnalyzeRequest-RequestAnalysis-1
+│   │   │   ├── ChatModel: gpt-4 (Spring AI - via ChatModelObservationFilter)
+│   │   │   └── tool:searchKnowledgeBase [status=success]
+│   │   └── tool-loop completed [iterations=2, replan=false]
+│   └── llm completed [duration=1200ms]
 ├── Action: GenerateResponse
-│   └── ChatModel: gpt-4 (Spring AI)
+│   ├── llm:gpt-4
+│   │   ├── tool-loop:GenerateResponse-Response-2
+│   │   │   └── ChatModel: gpt-4 (Spring AI)
+│   │   └── tool-loop completed [iterations=1]
+│   └── llm completed [duration=800ms]
 ├── goal:achieved [RequestProcessed]
 └── status: completed [duration=2340ms]
+```
+
+### Sub-agent Hierarchy
+
+```
+Agent: OrchestratorAgent (trace root)
+├── Action: DelegateToSpecialist
+│   └── Agent: SpecialistAgent (sub-agent, child of parent action)
+│       ├── Action: SpecializedTask
+│       │   └── llm:claude-3.5-sonnet
+│       └── status: completed
+└── status: completed
 ```
 
 ---
@@ -509,10 +573,8 @@ embabel:
 
 | Phase | Version | Features |
 |-------|---------|----------|
-| **Current** | v0.3.x | Agent, Action, Tool, Planning, State tracing, LLM token metrics (via Spring AI) |
-| **Short Term** | v0.4.x | Dynamic agent creation tracing, platform events |
-| **Medium Term** | v0.5.x | RAG pipeline tracing, RAG metrics |
-| **Long Term** | v1.0.x | Grafana dashboards, alerting, cost analytics |
+| **Current** | v0.3.x | Agent, Action, Tool, LLM, Tool Loop, Planning, State, RAG, Ranking, Dynamic Agent Creation tracing. Business metrics, MDC propagation, `@Tracked` annotation, ChatModel filter, GenAI semantic conventions. |
+| **Long Term** | v1.0.x | Pre-built Grafana dashboards, alerting, cost analytics |
 
 ---
 
@@ -544,39 +606,5 @@ Contributions are welcome! You can help by:
 - Reporting bugs or suggesting features
 - Submitting pull requests
 - Adding or improving tests
-
-> **Note:** This project will be submitted to the [Embabel](https://github.com/embabel) team for potential inclusion as an official add-on.
-
----
-
-## FAQ
-
-### ClassNotFoundException with OpenTelemetry
-
-**Problem:** You get a `ClassNotFoundException` or `NoClassDefFoundError` related to OpenTelemetry classes.
-
-**Solution:** Add the OpenTelemetry BOM to your project to align all OpenTelemetry dependency versions:
-
-```xml
-<dependencyManagement>
-  <dependencies>
-    <!-- OpenTelemetry BOM - must be first to override other BOMs -->
-    <dependency>
-      <groupId>io.opentelemetry</groupId>
-      <artifactId>opentelemetry-bom</artifactId>
-      <version>1.44.1</version>
-      <type>pom</type>
-      <scope>import</scope>
-    </dependency>
-    <!-- ... your other dependencies ... -->
-  </dependencies>
-</dependencyManagement>
-```
-
-After adding the BOM, remove explicit version numbers from your OpenTelemetry dependencies and run a clean build:
-
-```bash
-./mvnw clean spring-boot:run
-```
 
 ---

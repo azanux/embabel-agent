@@ -42,10 +42,25 @@ public class MdcPropagationEventListener implements AgenticEventListener {
 
     private final ObservabilityProperties properties;
 
+    /**
+     * Creates a new MDC propagation event listener.
+     *
+     * @param properties observability configuration properties controlling MDC propagation
+     */
     public MdcPropagationEventListener(ObservabilityProperties properties) {
         this.properties = properties;
     }
 
+    /**
+     * Handles agent process events by setting or clearing MDC keys based on the event type.
+     *
+     * <p>On {@link AgentProcessCreationEvent}, sets {@code run_id} and {@code agent.name}.
+     * On {@link ActionExecutionStartEvent}, adds the {@code action.name} key.
+     * On {@link ActionExecutionResultEvent}, removes the {@code action.name} key.
+     * On terminal events (completed, failed, killed), clears all MDC keys.
+     *
+     * @param event the agent process event to handle
+     */
     @Override
     public void onProcessEvent(AgentProcessEvent event) {
         if (!properties.isMdcPropagation()) {
@@ -66,6 +81,10 @@ public class MdcPropagationEventListener implements AgenticEventListener {
         }
     }
 
+    /**
+     * Removes all Embabel MDC keys ({@code run_id}, {@code agent.name}, {@code action.name}).
+     * Called on terminal process events to prevent MDC leaking into unrelated log statements.
+     */
     private void clearAll() {
         MDC.remove(MDC_RUN_ID);
         MDC.remove(MDC_AGENT_NAME);

@@ -88,7 +88,7 @@ class EmbabelTracingObservationHandlerTest {
         tracer = new OtelTracer(otelTracer, otelCurrentTraceContext, event -> {}, baggageManager);
 
         // Create the custom handler
-        handler = new EmbabelTracingObservationHandler(tracer, otelTracer);
+        handler = new EmbabelTracingObservationHandler(tracer);
 
         // Create ObservationRegistry and register our handler
         observationRegistry = ObservationRegistry.create();

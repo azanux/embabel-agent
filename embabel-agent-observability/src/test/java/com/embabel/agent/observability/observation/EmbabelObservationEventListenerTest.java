@@ -284,6 +284,54 @@ class EmbabelObservationEventListenerTest {
                     .isTrue();
             assertThat(childSpan.getKind()).isEqualTo(SpanKind.INTERNAL);
         }
+
+        @Test
+        @DisplayName("Subagent should be child of action that spawned it, not sibling")
+        void subagent_shouldBeChildOfActionSpan() {
+            AgentProcess parentProcess = createMockAgentProcess("parent-run", "ParentAgent");
+            AgentProcess childProcess = createMockAgentProcess("child-run", "ChildAgent");
+            when(childProcess.getParentId()).thenReturn("parent-run");
+
+            // Start parent agent
+            listener.onProcessEvent(new AgentProcessCreationEvent(parentProcess));
+
+            // Start action that will spawn the sub-agent
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(
+                    parentProcess, "com.example.RunSubAgent", "runSubAgent");
+            listener.onProcessEvent(actionStart);
+
+            // Sub-agent created DURING the action (action span is still open)
+            listener.onProcessEvent(new AgentProcessCreationEvent(childProcess));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(childProcess));
+
+            // Action completes after sub-agent
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(
+                    parentProcess, "com.example.RunSubAgent", "SUCCEEDED");
+            listener.onProcessEvent(actionResult);
+
+            // Complete parent
+            listener.onProcessEvent(new AgentProcessCompletedEvent(parentProcess));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(3); // parent agent + action + child agent
+
+            SpanData parentSpan = findSpanByName(spans, "ParentAgent");
+            SpanData actionSpan = findSpanByName(spans, "runSubAgent");
+            SpanData childSpan = findSpanByName(spans, "ChildAgent");
+
+            assertThat(parentSpan).isNotNull();
+            assertThat(actionSpan).isNotNull();
+            assertThat(childSpan).isNotNull();
+
+            // Action should be child of parent agent
+            assertThat(actionSpan.getParentSpanId()).isEqualTo(parentSpan.getSpanId());
+
+            // Sub-agent should be child of ACTION (not sibling)
+            assertThat(childSpan.getParentSpanId())
+                    .as("Sub-agent should be child of the action that spawned it")
+                    .isEqualTo(actionSpan.getSpanId());
+            assertThat(childSpan.getTraceId()).isEqualTo(parentSpan.getTraceId());
+        }
     }
 
     // ================================================================================
@@ -567,7 +615,7 @@ class EmbabelObservationEventListenerTest {
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
             assertThat(spans).hasSize(2); // agent + tool
 
-            SpanData toolSpan = findSpanByName(spans, "tool:WebSearch");
+            SpanData toolSpan = findSpanByName(spans, ObservationKeys.toolSpanName("WebSearch"));
             assertThat(toolSpan).isNotNull();
             assertThat(toolSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.tool.name")))
                     .isEqualTo("WebSearch");
@@ -593,7 +641,7 @@ class EmbabelObservationEventListenerTest {
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
             assertThat(spans).hasSize(1); // Only agent, no tool span
 
-            assertThat(findSpanByName(spans, "tool:WebSearch")).isNull();
+            assertThat(findSpanByName(spans, ObservationKeys.toolSpanName("WebSearch"))).isNull();
         }
     }
 
@@ -885,7 +933,7 @@ class EmbabelObservationEventListenerTest {
             assertThat(spans).hasSize(3); // agent + action + llm
 
             SpanData actionSpan = findSpanByName(spans, "MyAction");
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(actionSpan).isNotNull();
             assertThat(llmSpan).isNotNull();
@@ -912,7 +960,7 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.operation.name")))
@@ -944,7 +992,7 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             assertThat(llmSpan.getAttributes().get(AttributeKey.longKey("embabel.llm.duration_ms")))
@@ -970,7 +1018,7 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             assertThat(llmSpan.getAttributes().get(AttributeKey.stringKey("gen_ai.request.temperature")))
@@ -1000,7 +1048,7 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             assertThat(llmSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.ERROR);
@@ -1023,7 +1071,7 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(new AgentProcessCompletedEvent(process));
 
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             assertThat(llmSpan.getStatus().getStatusCode()).isEqualTo(StatusCode.OK);
@@ -1050,7 +1098,7 @@ class EmbabelObservationEventListenerTest {
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
             assertThat(spans).hasSize(2); // agent + action only
 
-            assertThat(findSpanByName(spans, "llm:gpt-4")).isNull();
+            assertThat(findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4")).isNull();
         }
 
         @Test
@@ -1069,7 +1117,7 @@ class EmbabelObservationEventListenerTest {
             assertThat(spans).hasSize(2); // agent + llm
 
             SpanData agentSpan = findSpanByName(spans, "TestAgent");
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
 
             assertThat(llmSpan).isNotNull();
             // LLM should be child of agent when no action
@@ -1498,9 +1546,9 @@ class EmbabelObservationEventListenerTest {
             assertThat(spans).hasSize(4);
 
             SpanData actionSpan = findSpanByName(spans, "MyAction");
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
             SpanData toolLoopSpan = spans.stream()
-                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .filter(s -> s.getName().startsWith(ObservationKeys.TOOL_LOOP_PREFIX))
                     .findFirst()
                     .orElse(null);
 
@@ -1560,9 +1608,9 @@ class EmbabelObservationEventListenerTest {
             assertThat(spans).hasSize(4);
 
             SpanData actionSpan = findSpanByName(spans, "MyAction");
-            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData llmSpan = findSpanByName(spans, ObservationKeys.LLM_PREFIX + "gpt-4");
             SpanData toolLoopSpan = spans.stream()
-                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .filter(s -> s.getName().startsWith(ObservationKeys.TOOL_LOOP_PREFIX))
                     .findFirst()
                     .orElse(null);
 
@@ -1652,7 +1700,7 @@ class EmbabelObservationEventListenerTest {
 
             // Should have: agent + action + 3 distinct LLM spans = 5
             long llmSpanCount = spans.stream()
-                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .filter(s -> s.getName().equals(ObservationKeys.LLM_PREFIX + "gpt-4"))
                     .count();
             assertThat(llmSpanCount)
                     .as("Should produce 3 distinct LLM spans for 3 parallel calls on different threads")
@@ -1663,7 +1711,7 @@ class EmbabelObservationEventListenerTest {
 
             // All 3 LLM spans should be children of the action span
             List<SpanData> llmSpans = spans.stream()
-                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .filter(s -> s.getName().equals(ObservationKeys.LLM_PREFIX + "gpt-4"))
                     .toList();
             for (SpanData llmSpan : llmSpans) {
                 assertThat(llmSpan.getParentSpanId())
@@ -1710,7 +1758,7 @@ class EmbabelObservationEventListenerTest {
             List<SpanData> spans = spanExporter.getFinishedSpanItems();
 
             long toolLoopSpanCount = spans.stream()
-                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .filter(s -> s.getName().startsWith(ObservationKeys.TOOL_LOOP_PREFIX))
                     .count();
             assertThat(toolLoopSpanCount)
                     .as("Should produce 2 distinct tool loop spans")
@@ -1806,7 +1854,7 @@ class EmbabelObservationEventListenerTest {
             assertThat(goalSpan.getParentSpanId()).isEqualTo(agentSpan.getSpanId());
 
             // Tool should be child of action
-            SpanData toolSpan = findSpanByName(spans, "tool:WebSearch");
+            SpanData toolSpan = findSpanByName(spans, ObservationKeys.toolSpanName("WebSearch"));
             assertThat(toolSpan.getParentSpanId()).isEqualTo(actionSpan.getSpanId());
         }
     }
