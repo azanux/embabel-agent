@@ -240,7 +240,8 @@ class EmbabelTracingObservationHandlerTest {
             when(tracer.withSpan(llmSpan)).thenReturn(llmScope);
             handler.onScopeOpened(llmCtx);
 
-            // Tool loop start: should use LLM as parent (NOT action)
+            // Tool loop start: should use LLM as parent (via tracer.currentSpan())
+            when(tracer.currentSpan()).thenReturn(llmSpan);
             when(tracer.nextSpan(llmSpan)).thenReturn(toolLoopSpan);
             when(toolLoopSpan.name(anyString())).thenReturn(toolLoopSpan);
             when(toolLoopSpan.start()).thenReturn(toolLoopSpan);
@@ -248,7 +249,7 @@ class EmbabelTracingObservationHandlerTest {
             var toolLoopCtx = EmbabelObservationContext.toolLoop("run-1", "tool-loop:interaction-1");
             handler.onStart(toolLoopCtx);
 
-            // Verify: ToolLoop span was created with llmSpan as parent
+            // Verify: ToolLoop span was created with llmSpan as parent (via currentSpan)
             verify(tracer).nextSpan(llmSpan);
         }
 
@@ -385,6 +386,58 @@ class EmbabelTracingObservationHandlerTest {
 
             // Verify: both tool loop spans created with actionSpan as parent
             verify(tracer, atLeast(2)).nextSpan(actionSpan);
+        }
+    }
+
+    @Nested
+    @DisplayName("Parallel LLM_CALL support")
+    class ParallelLlmCallSupport {
+
+        @Test
+        @DisplayName("TOOL_LOOP should prefer tracer.currentSpan() over LLM map lookup for parallel support")
+        void toolLoop_shouldPreferCurrentSpan_overMapLookup() {
+            Span agentSpan = createMockSpan("agent-span");
+            Span actionSpan = createMockSpan("action-span");
+            Span currentLlmSpan = createMockSpan("current-llm-span");
+            Span toolLoopSpan = createMockSpan("tool-loop-span");
+
+            Tracer.SpanInScope agentScope = mock(Tracer.SpanInScope.class);
+            Tracer.SpanInScope actionScope = mock(Tracer.SpanInScope.class);
+
+            // Agent start
+            lenient().when(tracer.nextSpan()).thenReturn(agentSpan);
+            lenient().when(agentSpan.name(anyString())).thenReturn(agentSpan);
+            lenient().when(agentSpan.start()).thenReturn(agentSpan);
+            lenient().when(tracer.withSpan(null)).thenReturn(agentScope);
+            lenient().when(tracer.withSpan(agentSpan)).thenReturn(agentScope);
+
+            var agentCtx = EmbabelObservationContext.rootAgent("run-1", "TestAgent");
+            handler.onStart(agentCtx);
+            handler.onScopeOpened(agentCtx);
+
+            // Action start
+            lenient().when(tracer.nextSpan(agentSpan)).thenReturn(actionSpan);
+            lenient().when(actionSpan.name(anyString())).thenReturn(actionSpan);
+            lenient().when(actionSpan.start()).thenReturn(actionSpan);
+            lenient().when(tracer.withSpan(actionSpan)).thenReturn(actionScope);
+
+            var actionCtx = EmbabelObservationContext.action("run-1", "MyAction");
+            handler.onStart(actionCtx);
+            handler.onScopeOpened(actionCtx);
+
+            // No LLM in the map for this runId — but currentSpan() returns an LLM span
+            // (simulating parallel scenario where the LLM span key was overwritten)
+            lenient().when(tracer.currentSpan()).thenReturn(currentLlmSpan);
+            lenient().when(tracer.nextSpan(currentLlmSpan)).thenReturn(toolLoopSpan);
+            lenient().when(toolLoopSpan.name(anyString())).thenReturn(toolLoopSpan);
+            lenient().when(toolLoopSpan.start()).thenReturn(toolLoopSpan);
+
+            var toolLoopCtx = EmbabelObservationContext.toolLoop("run-1", "tool-loop:int-1");
+            handler.onStart(toolLoopCtx);
+
+            // The tool-loop should use currentLlmSpan as parent (from tracer.currentSpan())
+            // NOT actionSpan from the map
+            verify(tracer).nextSpan(currentLlmSpan);
         }
     }
 

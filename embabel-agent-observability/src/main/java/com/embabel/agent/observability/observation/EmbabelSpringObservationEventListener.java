@@ -953,34 +953,33 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer llm span, then action span, fallback to agent span
-        var llmKey = "llm:" + runId + ":" + actionName;
-        SpanContext parentCtx = activeSpans.get(llmKey);
+        // Use tracer.currentSpan() as parent — the LLM span has already called
+        // tracer.withSpan() on this worker thread, so currentSpan() returns the correct parent.
+        // This supports parallel LLM calls (each on its own thread).
+        Span currentSpan = tracer.currentSpan();
         String resolvedParent;
-        if (parentCtx != null) {
-            resolvedParent = "llm (key=" + llmKey + ")";
+        Span span;
+        if (currentSpan != null) {
+            span = tracer.nextSpan(currentSpan).name("tool-loop:" + interactionId);
+            resolvedParent = "tracer.currentSpan()";
         } else {
+            // Fallback to action span, then agent span
             var actionKey = "action:" + runId + ":" + actionName;
-            parentCtx = activeSpans.get(actionKey);
+            SpanContext parentCtx = activeSpans.get(actionKey);
             if (parentCtx != null) {
                 resolvedParent = "action (key=" + actionKey + ")";
             } else {
                 parentCtx = activeSpans.get("agent:" + runId);
                 resolvedParent = parentCtx != null ? "agent (key=agent:" + runId + ")" : "NONE (using tracer.nextSpan())";
             }
+            if (parentCtx != null) {
+                span = tracer.nextSpan(parentCtx.span).name("tool-loop:" + interactionId);
+            } else {
+                span = tracer.nextSpan().name("tool-loop:" + interactionId);
+            }
         }
         log.debug("Tool loop parent resolution: {} (runId: {}, action: {}, interactionId: {}, activeKeys: {})",
                 resolvedParent, runId, actionName, interactionId, activeSpans.keySet());
-        if (parentCtx == null) {
-            log.warn("No parent found for tool loop {} (runId: {}). Using thread-local context as fallback.", interactionId, runId);
-        }
-
-        Span span;
-        if (parentCtx != null) {
-            span = tracer.nextSpan(parentCtx.span).name("tool-loop:" + interactionId);
-        } else {
-            span = tracer.nextSpan().name("tool-loop:" + interactionId);
-        }
 
         span.tag("gen_ai.operation.name", "tool_loop");
         span.tag("embabel.event.type", "tool_loop");
@@ -992,7 +991,9 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // CRITICAL: Start span and put in scope so Micrometer observation becomes child
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        activeSpans.put("tool-loop:" + runId + ":" + interactionId, new SpanContext(span, scope));
+        // Include threadId in key to support parallel tool loops on different threads
+        activeSpans.put("tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId(),
+                new SpanContext(span, scope));
 
         log.debug("Started span for tool loop: {} (runId: {})", interactionId, runId);
     }
@@ -1004,7 +1005,8 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        var key = "tool-loop:" + runId + ":" + interactionId;
+        // Match with threadId — start/complete are on the same thread
+        var key = "tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId();
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1071,7 +1073,9 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // CRITICAL: Start span and put in scope so tool-loop becomes child
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        activeSpans.put("llm:" + runId + ":" + actionName, new SpanContext(span, scope));
+        // Use identityHashCode(event) as discriminant to support parallel LLM calls
+        // with the same runId+actionName (e.g., from parallelMap)
+        activeSpans.put("llm:" + runId + ":" + System.identityHashCode(event), new SpanContext(span, scope));
 
         log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
@@ -1082,9 +1086,8 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String actionName = event.getRequest().getAction() != null
-                ? event.getRequest().getAction().getName() : "__no_action__";
-        String key = "llm:" + runId + ":" + actionName;
+        // Match the request event's identityHashCode to find the correct span
+        String key = "llm:" + runId + ":" + System.identityHashCode(event.getRequest());
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1102,7 +1105,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
             ctx.scope.close();
             ctx.span.end();
 
-            log.debug("Completed LLM span (runId: {}, action: {})", runId, actionName);
+            log.debug("Completed LLM span (runId: {}, key: {})", runId, key);
         }
     }
 

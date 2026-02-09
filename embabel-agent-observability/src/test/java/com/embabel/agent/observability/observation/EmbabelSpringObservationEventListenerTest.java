@@ -447,6 +447,76 @@ class EmbabelSpringObservationEventListenerTest {
     }
 
     // ================================================================================
+    // PARALLEL LLM CALL TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Parallel LLM Call Tests")
+    class ParallelLlmCallTests {
+
+        private Span mockSpan;
+        private Tracer.SpanInScope mockScope;
+
+        @BeforeEach
+        void setUp() {
+            mockSpan = mock(Span.class);
+            mockScope = mock(Tracer.SpanInScope.class);
+
+            lenient().when(tracer.nextSpan()).thenReturn(mockSpan);
+            lenient().when(tracer.nextSpan(any(Span.class))).thenReturn(mockSpan);
+            lenient().when(mockSpan.name(anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.tag(anyString(), anyString())).thenReturn(mockSpan);
+            lenient().when(mockSpan.start()).thenReturn(mockSpan);
+            lenient().when(tracer.withSpan(any())).thenReturn(mockScope);
+            lenient().when(tracer.withSpan(null)).thenReturn(mockScope);
+
+            properties.setTraceLlmCalls(true);
+        }
+
+        @Test
+        @DisplayName("Parallel LLM calls should each produce span end() calls")
+        void parallelLlmCalls_shouldProduceDistinctSpanEndCalls() {
+            EmbabelSpringObservationEventListener listener =
+                    new EmbabelSpringObservationEventListener(tracer, properties);
+
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+
+            // Fire 3 parallel LLM requests (same runId + actionName)
+            LlmRequestEvent<?> llmRequest1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmRequestEvent<?> llmRequest2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmRequestEvent<?> llmRequest3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+
+            listener.onProcessEvent(llmRequest1);
+            listener.onProcessEvent(llmRequest2);
+            listener.onProcessEvent(llmRequest3);
+
+            // Complete them
+            @SuppressWarnings("unchecked")
+            LlmRequestEvent<String> typed1 = (LlmRequestEvent<String>) llmRequest1;
+            @SuppressWarnings("unchecked")
+            LlmRequestEvent<String> typed2 = (LlmRequestEvent<String>) llmRequest2;
+            @SuppressWarnings("unchecked")
+            LlmRequestEvent<String> typed3 = (LlmRequestEvent<String>) llmRequest3;
+
+            listener.onProcessEvent(typed1.responseEvent("result1", java.time.Duration.ofMillis(150)));
+            listener.onProcessEvent(typed2.responseEvent("result2", java.time.Duration.ofMillis(150)));
+            listener.onProcessEvent(typed3.responseEvent("result3", java.time.Duration.ofMillis(150)));
+
+            // 3 LLM request starts (span.start()) + agent start = 4 starts
+            // But we care about 3 LLM span end() calls (not agent end)
+            // Agent start calls start() once, each LLM request calls start() once = 4 total
+            // Each LLM response should call scope.close() and span.end()
+            // Agent close + 3 LLM closes = at least 3 scope.close() calls for LLM
+            // The key assertion: all 3 LLM responses should find their spans (not overwritten)
+            // With the bug, only the last request's span is in the map, so only 1 end() for LLM
+            verify(mockScope, atLeast(3)).close(); // 3 LLM scope closes (agent scope may not close yet)
+            verify(mockSpan, atLeast(3)).end(); // 3 LLM span ends
+        }
+    }
+
+    // ================================================================================
     // RANKING EVENT TESTS
     // ================================================================================
 

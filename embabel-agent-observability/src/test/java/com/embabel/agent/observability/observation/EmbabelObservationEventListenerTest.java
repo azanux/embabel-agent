@@ -1517,6 +1517,147 @@ class EmbabelObservationEventListenerTest {
     }
 
     // ================================================================================
+    // PARALLEL LLM CALL TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Parallel LLM Call Tests")
+    class ParallelLlmCallTests {
+
+        private InMemorySpanExporter spanExporter;
+        private EmbabelObservationEventListener listener;
+
+        @BeforeEach
+        void setUp() {
+            spanExporter = InMemorySpanExporter.create();
+
+            SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                    .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                    .build();
+
+            OpenTelemetrySdk openTelemetry = OpenTelemetrySdk.builder()
+                    .setTracerProvider(tracerProvider)
+                    .setPropagators(ContextPropagators.noop())
+                    .build();
+
+            ObservabilityProperties properties = new ObservabilityProperties();
+            properties.setTraceLlmCalls(true);
+            properties.setTraceToolLoop(true);
+
+            ObjectProvider<OpenTelemetry> provider = mock(ObjectProvider.class);
+            when(provider.getIfAvailable()).thenReturn(openTelemetry);
+
+            listener = new EmbabelObservationEventListener(provider, properties);
+            listener.afterSingletonsInstantiated();
+        }
+
+        @AfterEach
+        void tearDown() {
+            spanExporter.reset();
+        }
+
+        @Test
+        @DisplayName("Parallel LLM calls with same runId and actionName should produce distinct spans")
+        void parallelLlmCalls_shouldProduceDistinctSpans() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+
+            // Fire 3 parallel LLM requests (same runId + actionName)
+            LlmRequestEvent<?> llmRequest1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmRequestEvent<?> llmRequest2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            LlmRequestEvent<?> llmRequest3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+
+            listener.onProcessEvent(llmRequest1);
+            listener.onProcessEvent(llmRequest2);
+            listener.onProcessEvent(llmRequest3);
+
+            // Complete them in order
+            LlmResponseEvent<?> llmResponse1 = createMockLlmResponseEvent(llmRequest1, "result1");
+            LlmResponseEvent<?> llmResponse2 = createMockLlmResponseEvent(llmRequest2, "result2");
+            LlmResponseEvent<?> llmResponse3 = createMockLlmResponseEvent(llmRequest3, "result3");
+
+            listener.onProcessEvent(llmResponse1);
+            listener.onProcessEvent(llmResponse2);
+            listener.onProcessEvent(llmResponse3);
+
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+
+            // Should have: agent + action + 3 distinct LLM spans = 5
+            long llmSpanCount = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .count();
+            assertThat(llmSpanCount)
+                    .as("Should produce 3 distinct LLM spans for 3 parallel calls")
+                    .isEqualTo(3);
+
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+            assertThat(actionSpan).isNotNull();
+
+            // All 3 LLM spans should be children of the action span
+            List<SpanData> llmSpans = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .toList();
+            for (SpanData llmSpan : llmSpans) {
+                assertThat(llmSpan.getParentSpanId())
+                        .as("Each LLM span should be child of action span")
+                        .isEqualTo(actionSpan.getSpanId());
+            }
+        }
+
+        @Test
+        @DisplayName("Parallel tool loops with same runId should produce distinct spans")
+        void parallelToolLoops_shouldProduceDistinctSpans() {
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+
+            // Fire LLM request
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            listener.onProcessEvent(llmRequest);
+
+            Action action = mock(Action.class);
+            when(action.getName()).thenReturn("com.example.MyAction");
+
+            // Fire 2 parallel tool loops (same runId, different interactionIds)
+            ToolLoopStartEvent toolLoop1 = new ToolLoopStartEvent(
+                    process, action, List.of("WebSearch"), 10, "interaction-1", String.class);
+            ToolLoopStartEvent toolLoop2 = new ToolLoopStartEvent(
+                    process, action, List.of("WebSearch"), 10, "interaction-2", String.class);
+
+            listener.onProcessEvent(toolLoop1);
+            listener.onProcessEvent(toolLoop2);
+
+            // Complete them
+            listener.onProcessEvent(toolLoop1.completedEvent(2, false));
+            listener.onProcessEvent(toolLoop2.completedEvent(3, false));
+
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            listener.onProcessEvent(llmResponse);
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+
+            long toolLoopSpanCount = spans.stream()
+                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .count();
+            assertThat(toolLoopSpanCount)
+                    .as("Should produce 2 distinct tool loop spans")
+                    .isEqualTo(2);
+        }
+    }
+
+    // ================================================================================
     // FULL HIERARCHY TEST
     // ================================================================================
 

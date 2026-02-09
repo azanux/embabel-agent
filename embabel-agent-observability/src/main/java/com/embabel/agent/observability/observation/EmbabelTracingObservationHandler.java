@@ -229,17 +229,20 @@ public class EmbabelTracingObservationHandler
                 return activeAgentSpans.get(runId);
 
             case TOOL_LOOP:
-                Span toolLoopLlmSpan = activeLlmSpans.get(runId);
-                if (toolLoopLlmSpan != null) {
-                    log.debug("TOOL_LOOP parent resolved to LLM span (runId: {})", runId);
-                    return toolLoopLlmSpan;
+                // Prefer tracer.currentSpan() — the LLM span has already called
+                // tracer.withSpan() on this worker thread, so currentSpan() returns
+                // the correct parent. This supports parallel LLM calls.
+                Span currentToolLoopSpan = tracer.currentSpan();
+                if (currentToolLoopSpan != null) {
+                    log.debug("TOOL_LOOP parent resolved to tracer.currentSpan() (runId: {})", runId);
+                    return currentToolLoopSpan;
                 }
                 Span toolLoopActionSpan = activeActionSpans.get(runId);
                 if (toolLoopActionSpan != null) {
-                    log.debug("TOOL_LOOP parent resolved to ACTION span (runId: {}, no LLM span found)", runId);
+                    log.debug("TOOL_LOOP parent resolved to ACTION span (runId: {}, no currentSpan)", runId);
                     return toolLoopActionSpan;
                 }
-                log.debug("TOOL_LOOP parent resolved to AGENT span (runId: {}, no LLM or ACTION span found)", runId);
+                log.debug("TOOL_LOOP parent resolved to AGENT span (runId: {}, no currentSpan or ACTION)", runId);
                 return activeAgentSpans.get(runId);
 
             case TOOL_CALL:
@@ -287,10 +290,12 @@ public class EmbabelTracingObservationHandler
                 activeActionSpans.put(context.getRunId(), span);
                 break;
             case LLM_CALL:
-                activeLlmSpans.put(context.getRunId(), span);
+                // Use identityHashCode to support parallel LLM calls with same runId
+                activeLlmSpans.put(String.valueOf(System.identityHashCode(context)), span);
                 break;
             case TOOL_LOOP:
-                activeToolLoopSpans.put(context.getRunId(), span);
+                // Use identityHashCode to support parallel tool loops with same runId
+                activeToolLoopSpans.put(String.valueOf(System.identityHashCode(context)), span);
                 break;
             default:
                 break;
@@ -311,10 +316,10 @@ public class EmbabelTracingObservationHandler
                 activeActionSpans.remove(context.getRunId());
                 break;
             case LLM_CALL:
-                activeLlmSpans.remove(context.getRunId());
+                activeLlmSpans.remove(String.valueOf(System.identityHashCode(context)));
                 break;
             case TOOL_LOOP:
-                activeToolLoopSpans.remove(context.getRunId());
+                activeToolLoopSpans.remove(String.valueOf(System.identityHashCode(context)));
                 break;
             default:
                 break;
