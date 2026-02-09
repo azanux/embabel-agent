@@ -918,6 +918,32 @@ class EmbabelFullObservationEventListenerTest {
     }
 
     /**
+     * Creates a real LlmRequestEvent with specific messages.
+     */
+    private <O> LlmRequestEvent<O> createMockLlmRequestEventWithMessages(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass,
+            List<com.embabel.chat.Message> messages) {
+        com.embabel.agent.core.Action action = null;
+        if (actionName != null) {
+            action = mock(com.embabel.agent.core.Action.class);
+            lenient().when(action.getName()).thenReturn(actionName);
+        }
+
+        LlmMetadata llmMetadata = mock(LlmMetadata.class);
+        lenient().when(llmMetadata.getName()).thenReturn(modelName);
+        lenient().when(llmMetadata.getProvider()).thenReturn("openai");
+
+        LlmOptions llmOptions = new LlmOptions();
+        llmOptions.setTemperature(0.7);
+        llmOptions.setMaxTokens(1000);
+        llmOptions.setTopP(0.9);
+
+        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+
+        return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, messages);
+    }
+
+    /**
      * Creates a real LlmResponseEvent via the request's factory method.
      */
     @SuppressWarnings("unchecked")
@@ -934,29 +960,29 @@ class EmbabelFullObservationEventListenerTest {
     class ParallelLlmCallTests {
 
         @Test
-        @DisplayName("Parallel LLM calls with same runId+actionName should produce distinct spans")
-        void parallelLlmCalls_shouldProduceDistinctSpans() {
+        @DisplayName("Parallel LLM calls on different threads should produce distinct spans")
+        void parallelLlmCalls_shouldProduceDistinctSpans() throws Exception {
             properties.setTraceLlmCalls(true);
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
             ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
 
-            // Start agent + action
+            // Start agent + action on main thread
             listener.onProcessEvent(new AgentProcessCreationEvent(process));
             listener.onProcessEvent(actionStart);
 
-            // Fire 3 LLM requests with same runId + actionName (simulates parallelMap)
-            LlmRequestEvent<?> req1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
-            LlmRequestEvent<?> req2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
-            LlmRequestEvent<?> req3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
-
-            listener.onProcessEvent(req1);
-            listener.onProcessEvent(req2);
-            listener.onProcessEvent(req3);
-
-            // Fire 3 LLM responses
-            listener.onProcessEvent(createMockLlmResponseEvent(req1, "result1"));
-            listener.onProcessEvent(createMockLlmResponseEvent(req2, "result2"));
-            listener.onProcessEvent(createMockLlmResponseEvent(req3, "result3"));
+            // Fire 3 LLM request/response pairs on separate threads (simulates parallelMap)
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
+            for (int i = 0; i < 3; i++) {
+                final int idx = i;
+                new Thread(() -> {
+                    LlmRequestEvent<?> req = createMockLlmRequestEvent(
+                            process, "com.example.MyAction", "gemini-2.5-pro", String.class);
+                    listener.onProcessEvent(req);
+                    listener.onProcessEvent(createMockLlmResponseEvent(req, "result" + idx));
+                    latch.countDown();
+                }).start();
+            }
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
 
             // Complete action + agent
             ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
@@ -969,7 +995,7 @@ class EmbabelFullObservationEventListenerTest {
                     .filter(s -> s.getName().equals("llm:gemini-2.5-pro"))
                     .count();
             assertThat(llmSpanCount)
-                    .as("Expected 3 distinct LLM spans for 3 parallel calls with same runId+actionName")
+                    .as("Expected 3 distinct LLM spans for 3 parallel calls on different threads")
                     .isEqualTo(3);
         }
 
@@ -1016,8 +1042,8 @@ class EmbabelFullObservationEventListenerTest {
         }
 
         @Test
-        @DisplayName("Tool loop should use current observation as parent (not map lookup)")
-        void toolLoopParent_shouldUseCurrentObservation() {
+        @DisplayName("Tool loop should be parented under LLM span via threadId-based map lookup")
+        void toolLoopParent_shouldBeUnderLlmSpan() {
             properties.setTraceToolLoop(true);
             properties.setTraceLlmCalls(true);
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
@@ -1031,7 +1057,7 @@ class EmbabelFullObservationEventListenerTest {
             LlmRequestEvent<?> llmReq = createMockLlmRequestEvent(process, "com.example.MyAction", "gemini-2.5-pro", String.class);
             listener.onProcessEvent(llmReq);
 
-            // Start tool loop — should be parented under the LLM observation via getCurrentObservation()
+            // Start tool loop — should be parented under the LLM observation via threadId-based map lookup
             ToolLoopStartEvent tls = new ToolLoopStartEvent(
                     process, actionStart.getAction(),
                     List.of("tool1"), 10, "interaction-1", String.class);
@@ -1058,6 +1084,92 @@ class EmbabelFullObservationEventListenerTest {
             assertThat(toolLoopSpan.getParentSpanId())
                     .as("Tool loop should be parented under the LLM span")
                     .isEqualTo(llmSpan.getSpanId());
+        }
+
+        @Test
+        @DisplayName("LLM span should have input.value from messages and output.value from response")
+        void llmSpan_shouldHaveInputOutput() {
+            properties.setTraceLlmCalls(true);
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            // Create LLM request with messages
+            List<com.embabel.chat.Message> messages = List.of(
+                    new com.embabel.chat.SystemMessage("You are a helpful assistant."),
+                    new com.embabel.chat.UserMessage("What is 2+2?")
+            );
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEventWithMessages(
+                    process, "com.example.MyAction", "gpt-4", String.class, messages);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "The answer is 4.");
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .findFirst()
+                    .orElseThrow();
+
+            // Verify input.value contains messages
+            String inputValue = llmSpan.getAttributes().get(
+                    io.opentelemetry.api.common.AttributeKey.stringKey("input.value"));
+            assertThat(inputValue).isNotNull();
+            assertThat(inputValue).contains("SYSTEM");
+            assertThat(inputValue).contains("You are a helpful assistant.");
+            assertThat(inputValue).contains("USER");
+            assertThat(inputValue).contains("What is 2+2?");
+
+            // Verify output.value contains response
+            String outputValue = llmSpan.getAttributes().get(
+                    io.opentelemetry.api.common.AttributeKey.stringKey("output.value"));
+            assertThat(outputValue).isNotNull();
+            assertThat(outputValue).contains("The answer is 4.");
+        }
+
+        @Test
+        @DisplayName("LLM span should not have output.value when response is a Throwable")
+        void llmSpan_shouldNotHaveOutputValue_whenResponseIsThrowable() {
+            properties.setTraceLlmCalls(true);
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent", null);
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+
+            List<com.embabel.chat.Message> messages = List.of(
+                    new com.embabel.chat.UserMessage("Hello")
+            );
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEventWithMessages(
+                    process, "com.example.MyAction", "gpt-4", Object.class, messages);
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, new RuntimeException("LLM failed"));
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+            listener.onProcessEvent(llmResponse);
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "FAILED");
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData llmSpan = spans.stream()
+                    .filter(s -> s.getName().equals("llm:gpt-4"))
+                    .findFirst()
+                    .orElseThrow();
+
+            // input.value should still be set
+            String inputValue = llmSpan.getAttributes().get(
+                    io.opentelemetry.api.common.AttributeKey.stringKey("input.value"));
+            assertThat(inputValue).isNotNull();
+            assertThat(inputValue).contains("USER");
+
+            // output.value should NOT be set for error responses
+            String outputValue = llmSpan.getAttributes().get(
+                    io.opentelemetry.api.common.AttributeKey.stringKey("output.value"));
+            assertThat(outputValue).isNull();
         }
     }
 

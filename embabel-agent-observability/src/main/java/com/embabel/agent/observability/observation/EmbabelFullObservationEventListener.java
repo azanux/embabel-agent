@@ -36,6 +36,7 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -767,14 +768,16 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer current observation (LLM obs has openScope() on this thread),
-        // then action observation, fallback to agent observation
-        Observation currentObs = observationRegistry.getCurrentObservation();
+        // Find parent: prefer LLM observation (by threadId), then action, fallback to agent.
+        // LlmRequest, ToolLoopStart, and LlmResponse are dispatched on the same worker thread,
+        // so threadId is a reliable correlation key for the LLM→tool-loop parent relationship.
+        var llmKey = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        ObservationContext llmCtx = activeObservations.get(llmKey);
         String resolvedParent;
         Observation parentObs;
-        if (currentObs != null) {
-            parentObs = currentObs;
-            resolvedParent = "current (name=" + currentObs.getContext().getName() + ")";
+        if (llmCtx != null) {
+            parentObs = llmCtx.observation;
+            resolvedParent = "llm (key=" + llmKey + ")";
         } else {
             var actionKey = "action:" + runId + ":" + actionName;
             ObservationContext parentCtx = activeObservations.get(actionKey);
@@ -889,10 +892,25 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
             observation.lowCardinalityKeyValue("gen_ai.provider.name", provider);
         }
 
+        // Capture LLM input from messages
+        List<?> messages = event.getMessages();
+        if (messages != null && !messages.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            for (Object msg : messages) {
+                if (sb.length() > 0) sb.append("\n");
+                if (msg instanceof com.embabel.chat.Message m) {
+                    sb.append("[").append(m.getRole().name()).append("]: ").append(m.getContent());
+                }
+            }
+            if (sb.length() > 0) {
+                observation.highCardinalityKeyValue("input.value", truncate(sb.toString()));
+            }
+        }
+
         observation.start();
         Observation.Scope scope = observation.openScope();
 
-        activeObservations.put("llm:" + runId + ":" + System.identityHashCode(event), new ObservationContext(observation, scope));
+        activeObservations.put("llm:" + runId + ":" + Thread.currentThread().threadId(), new ObservationContext(observation, scope));
         log.debug("Started LLM observation: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
 
@@ -902,7 +920,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String key = "llm:" + runId + ":" + System.identityHashCode(event.getRequest());
+        String key = "llm:" + runId + ":" + Thread.currentThread().threadId();
 
         ObservationContext ctx = activeObservations.remove(key);
 
@@ -917,6 +935,8 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
 
             if (response instanceof Throwable error) {
                 ctx.observation.error(error);
+            } else if (response != null) {
+                ctx.observation.highCardinalityKeyValue("output.value", truncate(response.toString()));
             }
 
             ctx.scope.close();
