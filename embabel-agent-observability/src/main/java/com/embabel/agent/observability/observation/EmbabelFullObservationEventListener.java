@@ -768,10 +768,10 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer LLM observation (by threadId), then action, fallback to agent.
-        // LlmRequest, ToolLoopStart, and LlmResponse are dispatched on the same worker thread,
-        // so threadId is a reliable correlation key for the LLM→tool-loop parent relationship.
-        var llmKey = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        // Find parent: prefer LLM observation (by interactionId), then action, fallback to agent.
+        // interactionId is shared between LlmRequestEvent and ToolLoopStartEvent and is unique per LLM call.
+        // This works even when events fire on different threads (e.g., CompletableFuture.supplyAsync).
+        var llmKey = "llm:" + runId + ":" + interactionId;
         ObservationContext llmCtx = activeObservations.get(llmKey);
         String resolvedParent;
         Observation parentObs;
@@ -813,7 +813,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.start();
         Observation.Scope scope = observation.openScope();
 
-        activeObservations.put("tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId(), new ObservationContext(observation, scope));
+        activeObservations.put("tool-loop:" + runId + ":" + interactionId, new ObservationContext(observation, scope));
         log.debug("Started observation for tool loop: {} (runId: {})", interactionId, runId);
     }
 
@@ -824,7 +824,7 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        var key = "tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId();
+        var key = "tool-loop:" + runId + ":" + interactionId;
 
         ObservationContext ctx = activeObservations.remove(key);
 
@@ -910,7 +910,9 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
         observation.start();
         Observation.Scope scope = observation.openScope();
 
-        activeObservations.put("llm:" + runId + ":" + Thread.currentThread().threadId(), new ObservationContext(observation, scope));
+        // Use interactionId as discriminant — unique per LLM call and shared with ToolLoopStartEvent.
+        // This works even when events fire on different threads (CompletableFuture.supplyAsync).
+        activeObservations.put("llm:" + runId + ":" + event.getInteraction().getId(), new ObservationContext(observation, scope));
         log.debug("Started LLM observation: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
 
@@ -920,7 +922,8 @@ public class EmbabelFullObservationEventListener implements AgenticEventListener
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        String key = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        // Match by interactionId — same as stored in onLlmRequest
+        String key = "llm:" + runId + ":" + event.getRequest().getInteraction().getId();
 
         ObservationContext ctx = activeObservations.remove(key);
 

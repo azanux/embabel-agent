@@ -483,10 +483,10 @@ class EmbabelSpringObservationEventListenerTest {
 
             listener.onProcessEvent(new AgentProcessCreationEvent(process));
 
-            // Fire 3 parallel LLM requests (same runId + actionName)
-            LlmRequestEvent<?> llmRequest1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
-            LlmRequestEvent<?> llmRequest2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
-            LlmRequestEvent<?> llmRequest3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            // Fire 3 parallel LLM requests (same runId + actionName, unique interactionIds)
+            LlmRequestEvent<?> llmRequest1 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class, "parallel-1");
+            LlmRequestEvent<?> llmRequest2 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class, "parallel-2");
+            LlmRequestEvent<?> llmRequest3 = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class, "parallel-3");
 
             listener.onProcessEvent(llmRequest1);
             listener.onProcessEvent(llmRequest2);
@@ -707,6 +707,15 @@ class EmbabelSpringObservationEventListenerTest {
     @SuppressWarnings("unchecked")
     private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
             AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
+        return createMockLlmRequestEvent(process, actionName, modelName, outputClass, null);
+    }
+
+    /**
+     * Creates a real LlmRequestEvent with a specific interactionId.
+     */
+    @SuppressWarnings("unchecked")
+    private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass, String interactionId) {
         com.embabel.agent.core.Action action = null;
         if (actionName != null) {
             action = mock(com.embabel.agent.core.Action.class);
@@ -722,7 +731,20 @@ class EmbabelSpringObservationEventListenerTest {
         llmOptions.setMaxTokens(1000);
         llmOptions.setTopP(0.9);
 
-        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+        LlmInteraction interaction;
+        if (interactionId != null) {
+            try {
+                var llmCall = com.embabel.agent.core.support.LlmCall.Companion.using(llmOptions);
+                var fromMethod = LlmInteraction.class.getDeclaredMethod("from-5V0vsfg",
+                        com.embabel.agent.core.support.LlmCall.class, String.class);
+                fromMethod.setAccessible(true);
+                interaction = (LlmInteraction) fromMethod.invoke(null, llmCall, interactionId);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to create LlmInteraction with custom ID: " + interactionId, e);
+            }
+        } else {
+            interaction = LlmInteraction.using(llmOptions);
+        }
 
         return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, java.util.Collections.emptyList());
     }

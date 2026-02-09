@@ -953,10 +953,10 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Find parent: prefer LLM span (by threadId), then action, fallback to agent.
-        // LlmRequest, ToolLoopStart, and LlmResponse are dispatched on the same worker thread,
-        // so threadId is a reliable correlation key for the LLM→tool-loop parent relationship.
-        var llmKey = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        // Find parent: prefer LLM span (by interactionId), then action, fallback to agent.
+        // interactionId is shared between LlmRequestEvent and ToolLoopStartEvent and is unique per LLM call.
+        // This works even when events fire on different threads (e.g., CompletableFuture.supplyAsync).
+        var llmKey = "llm:" + runId + ":" + interactionId;
         SpanContext llmCtx = activeSpans.get(llmKey);
         Context parentContext;
         String resolvedParent;
@@ -993,9 +993,7 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
 
         // CRITICAL: makeCurrent() so Micrometer observation and Spring AI ChatModel become children
         Scope scope = span.makeCurrent();
-        // Include threadId in key to support parallel tool loops on different threads
-        activeSpans.put("tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId(),
-                new SpanContext(span, scope));
+        activeSpans.put("tool-loop:" + runId + ":" + interactionId, new SpanContext(span, scope));
 
         log.debug("Started span for tool loop: {} (runId: {})", interactionId, runId);
     }
@@ -1007,8 +1005,7 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        // Match with threadId — start/complete are on the same thread
-        var key = "tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId();
+        var key = "tool-loop:" + runId + ":" + interactionId;
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1088,9 +1085,9 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
 
         // CRITICAL: makeCurrent() so tool-loop becomes child of this LLM span
         Scope scope = span.makeCurrent();
-        // Use threadId as discriminant — parallel LLM calls run on different worker threads,
-        // and LlmRequest/ToolLoopStart/LlmResponse are sequential on the same thread
-        activeSpans.put("llm:" + runId + ":" + Thread.currentThread().threadId(), new SpanContext(span, scope));
+        // Use interactionId as discriminant — unique per LLM call and shared with ToolLoopStartEvent.
+        // This works even when events fire on different threads (CompletableFuture.supplyAsync).
+        activeSpans.put("llm:" + runId + ":" + event.getInteraction().getId(), new SpanContext(span, scope));
 
         log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
@@ -1101,8 +1098,8 @@ public class EmbabelObservationEventListener implements AgenticEventListener, Sm
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        // Match by threadId — LlmRequest and LlmResponse are on the same worker thread
-        String key = "llm:" + runId + ":" + Thread.currentThread().threadId();
+        // Match by interactionId — same as stored in onLlmRequest
+        String key = "llm:" + runId + ":" + event.getRequest().getInteraction().getId();
 
         SpanContext ctx = activeSpans.remove(key);
 

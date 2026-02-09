@@ -953,15 +953,16 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         var actionName = event.getAction() != null ? event.getAction().getName() : "__no_action__";
         var interactionId = event.getInteractionId();
 
-        // Use tracer.currentSpan() as parent — the LLM span has already called
-        // tracer.withSpan() on this worker thread, so currentSpan() returns the correct parent.
-        // This supports parallel LLM calls (each on its own thread).
-        Span currentSpan = tracer.currentSpan();
+        // Find parent: prefer LLM span (by interactionId), then action, fallback to agent.
+        // interactionId is shared between LlmRequestEvent and ToolLoopStartEvent and is unique per LLM call.
+        // This works even when events fire on different threads (e.g., CompletableFuture.supplyAsync).
+        var llmKey = "llm:" + runId + ":" + interactionId;
+        SpanContext llmCtx = activeSpans.get(llmKey);
         String resolvedParent;
         Span span;
-        if (currentSpan != null) {
-            span = tracer.nextSpan(currentSpan).name("tool-loop:" + interactionId);
-            resolvedParent = "tracer.currentSpan()";
+        if (llmCtx != null) {
+            span = tracer.nextSpan(llmCtx.span).name("tool-loop:" + interactionId);
+            resolvedParent = "llm (key=" + llmKey + ")";
         } else {
             // Fallback to action span, then agent span
             var actionKey = "action:" + runId + ":" + actionName;
@@ -991,9 +992,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // CRITICAL: Start span and put in scope so Micrometer observation becomes child
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        // Include threadId in key to support parallel tool loops on different threads
-        activeSpans.put("tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId(),
-                new SpanContext(span, scope));
+        activeSpans.put("tool-loop:" + runId + ":" + interactionId, new SpanContext(span, scope));
 
         log.debug("Started span for tool loop: {} (runId: {})", interactionId, runId);
     }
@@ -1005,8 +1004,7 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         AgentProcess process = event.getAgentProcess();
         var runId = process.getId();
         var interactionId = event.getInteractionId();
-        // Match with threadId — start/complete are on the same thread
-        var key = "tool-loop:" + runId + ":" + interactionId + ":" + Thread.currentThread().threadId();
+        var key = "tool-loop:" + runId + ":" + interactionId;
 
         SpanContext ctx = activeSpans.remove(key);
 
@@ -1073,9 +1071,9 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
         // CRITICAL: Start span and put in scope so tool-loop becomes child
         span.start();
         Tracer.SpanInScope scope = tracer.withSpan(span);
-        // Use identityHashCode(event) as discriminant to support parallel LLM calls
-        // with the same runId+actionName (e.g., from parallelMap)
-        activeSpans.put("llm:" + runId + ":" + System.identityHashCode(event), new SpanContext(span, scope));
+        // Use interactionId as discriminant — unique per LLM call and shared with ToolLoopStartEvent.
+        // This works even when events fire on different threads (CompletableFuture.supplyAsync).
+        activeSpans.put("llm:" + runId + ":" + event.getInteraction().getId(), new SpanContext(span, scope));
 
         log.debug("Started LLM span: llm:{} (runId: {}, action: {})", modelName, runId, actionName);
     }
@@ -1086,8 +1084,8 @@ public class EmbabelSpringObservationEventListener implements AgenticEventListen
     private void onLlmResponse(LlmResponseEvent<?> event) {
         AgentProcess process = event.getAgentProcess();
         String runId = process.getId();
-        // Match the request event's identityHashCode to find the correct span
-        String key = "llm:" + runId + ":" + System.identityHashCode(event.getRequest());
+        // Match by interactionId — same as stored in onLlmRequest
+        String key = "llm:" + runId + ":" + event.getRequest().getInteraction().getId();
 
         SpanContext ctx = activeSpans.remove(key);
 

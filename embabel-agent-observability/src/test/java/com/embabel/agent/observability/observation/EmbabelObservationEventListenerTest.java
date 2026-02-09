@@ -1472,11 +1472,13 @@ class EmbabelObservationEventListenerTest {
             AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
             ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
             LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            // Use the same interactionId as the LlmRequestEvent's interaction
+            String interactionId = llmRequest.getInteraction().getId();
 
             Action action = mock(Action.class);
             when(action.getName()).thenReturn("com.example.MyAction");
             ToolLoopStartEvent toolLoopStart = new ToolLoopStartEvent(
-                    process, action, List.of("WebSearch"), 10, "interaction-1", String.class);
+                    process, action, List.of("WebSearch"), 10, interactionId, String.class);
             ToolLoopCompletedEvent toolLoopCompleted = toolLoopStart.completedEvent(3, false);
 
             LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
@@ -1512,6 +1514,68 @@ class EmbabelObservationEventListenerTest {
             // Tool loop should be child of LLM (NOT action)
             assertThat(toolLoopSpan.getParentSpanId())
                     .as("Tool loop should be child of LLM span, not action span")
+                    .isEqualTo(llmSpan.getSpanId());
+        }
+
+        @Test
+        @DisplayName("Tool loop should be child of LLM span even when fired from a different thread (CompletableFuture.supplyAsync)")
+        void toolLoop_shouldBeChildOfLlmSpan_whenOnDifferentThread() throws Exception {
+            // Reproduces the real bug: executeWithTimeout uses CompletableFuture.supplyAsync,
+            // so LlmRequest fires on Thread-A but ToolLoopStart fires on Thread-B (ForkJoinPool)
+            AgentProcess process = createMockAgentProcess("run-1", "TestAgent");
+            ActionExecutionStartEvent actionStart = createMockActionStartEvent(process, "com.example.MyAction", "MyAction");
+            LlmRequestEvent<?> llmRequest = createMockLlmRequestEvent(process, "com.example.MyAction", "gpt-4", String.class);
+            String interactionId = llmRequest.getInteraction().getId();
+
+            Action action = mock(Action.class);
+            when(action.getName()).thenReturn("com.example.MyAction");
+            ToolLoopStartEvent toolLoopStart = new ToolLoopStartEvent(
+                    process, action, List.of("WebSearch"), 10, interactionId, String.class);
+            ToolLoopCompletedEvent toolLoopCompleted = toolLoopStart.completedEvent(3, false);
+
+            LlmResponseEvent<?> llmResponse = createMockLlmResponseEvent(llmRequest, "result");
+            ActionExecutionResultEvent actionResult = createMockActionResultEvent(process, "com.example.MyAction", "SUCCESS");
+
+            // Thread-A: agent creation, action start, LLM request
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(actionStart);
+            listener.onProcessEvent(llmRequest);
+
+            // Thread-B (simulating CompletableFuture.supplyAsync / ForkJoinPool):
+            // tool-loop start and complete
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            new Thread(() -> {
+                listener.onProcessEvent(toolLoopStart);
+                listener.onProcessEvent(toolLoopCompleted);
+                latch.countDown();
+            }).start();
+            latch.await(5, java.util.concurrent.TimeUnit.SECONDS);
+
+            // Thread-A: LLM response, action result, agent completed
+            listener.onProcessEvent(llmResponse);
+            listener.onProcessEvent(actionResult);
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            assertThat(spans).hasSize(4);
+
+            SpanData actionSpan = findSpanByName(spans, "MyAction");
+            SpanData llmSpan = findSpanByName(spans, "llm:gpt-4");
+            SpanData toolLoopSpan = spans.stream()
+                    .filter(s -> s.getName().startsWith("tool-loop:"))
+                    .findFirst()
+                    .orElse(null);
+
+            assertThat(actionSpan).isNotNull();
+            assertThat(llmSpan).isNotNull();
+            assertThat(toolLoopSpan).isNotNull();
+
+            // LLM should be child of action
+            assertThat(llmSpan.getParentSpanId()).isEqualTo(actionSpan.getSpanId());
+
+            // Tool loop should be child of LLM even though fired from different thread
+            assertThat(toolLoopSpan.getParentSpanId())
+                    .as("Tool loop should be child of LLM span even when on different thread")
                     .isEqualTo(llmSpan.getSpanId());
         }
     }
@@ -1566,12 +1630,13 @@ class EmbabelObservationEventListenerTest {
             listener.onProcessEvent(actionStart);
 
             // Fire 3 LLM request/response pairs on separate threads (simulates parallelMap)
+            // Each parallel call has a unique interactionId, matching production behavior
             java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(3);
             for (int i = 0; i < 3; i++) {
                 final int idx = i;
                 new Thread(() -> {
                     LlmRequestEvent<?> req = createMockLlmRequestEvent(
-                            process, "com.example.MyAction", "gpt-4", String.class);
+                            process, "com.example.MyAction", "gpt-4", String.class, "parallel-interaction-" + idx);
                     listener.onProcessEvent(req);
                     listener.onProcessEvent(createMockLlmResponseEvent(req, "result" + idx));
                     latch.countDown();
@@ -1903,6 +1968,16 @@ class EmbabelObservationEventListenerTest {
      */
     private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
             AgentProcess process, String actionName, String modelName, Class<O> outputClass) {
+        return createMockLlmRequestEvent(process, actionName, modelName, outputClass, null);
+    }
+
+    /**
+     * Creates a real LlmRequestEvent with a specific interactionId.
+     * Uses reflection to call LlmInteraction.from() since the method name is mangled
+     * due to the InteractionId inline value class parameter.
+     */
+    private static <O> LlmRequestEvent<O> createMockLlmRequestEvent(
+            AgentProcess process, String actionName, String modelName, Class<O> outputClass, String interactionId) {
         Action action = null;
         if (actionName != null) {
             action = mock(Action.class);
@@ -1918,7 +1993,21 @@ class EmbabelObservationEventListenerTest {
         llmOptions.setMaxTokens(1000);
         llmOptions.setTopP(0.9);
 
-        LlmInteraction interaction = LlmInteraction.using(llmOptions);
+        LlmInteraction interaction;
+        if (interactionId != null) {
+            // Use reflection to call mangled LlmInteraction.from(LlmCall, String/*InteractionId*/)
+            try {
+                var llmCall = com.embabel.agent.core.support.LlmCall.Companion.using(llmOptions);
+                var fromMethod = LlmInteraction.class.getDeclaredMethod("from-5V0vsfg",
+                        com.embabel.agent.core.support.LlmCall.class, String.class);
+                fromMethod.setAccessible(true);
+                interaction = (LlmInteraction) fromMethod.invoke(null, llmCall, interactionId);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to create LlmInteraction with custom ID: " + interactionId, e);
+            }
+        } else {
+            interaction = LlmInteraction.using(llmOptions);
+        }
 
         return new LlmRequestEvent<>(process, action, outputClass, interaction, llmMetadata, Collections.emptyList());
     }
