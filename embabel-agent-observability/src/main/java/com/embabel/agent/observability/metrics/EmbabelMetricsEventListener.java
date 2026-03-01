@@ -41,12 +41,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code embabel.agent.errors.total} (counter) — agent failures, tagged by {@code agent}</li>
  *   <li>{@code embabel.llm.tokens.total} (counter) — LLM tokens, tagged by {@code agent} and {@code direction}</li>
  *   <li>{@code embabel.llm.cost.total} (counter) — estimated USD cost, tagged by {@code agent}</li>
- *   <li>{@code embabel.tool.errors.total} (counter) — tool failures, tagged by {@code tool}</li>
+ *   <li>{@code embabel.tool.errors.total} (counter) — tool failures, tagged by {@code tool} and {@code agent}</li>
  *   <li>{@code embabel.planning.replanning.total} (counter) — replanifications, tagged by {@code agent}</li>
  *   <li>{@code embabel.agent.duration} (timer) — agent process duration, tagged by {@code agent} and {@code status}</li>
  *   <li>{@code embabel.llm.requests.total} (counter) — LLM requests, tagged by {@code agent} and {@code model}</li>
- *   <li>{@code embabel.llm.duration} (timer) — LLM call duration, tagged by {@code model}</li>
- *   <li>{@code embabel.tool.duration} (timer) — tool call duration, tagged by {@code tool}</li>
+ *   <li>{@code embabel.llm.duration} (timer) — LLM call duration, tagged by {@code model} and {@code agent}</li>
+ *   <li>{@code embabel.tool.duration} (timer) — tool call duration, tagged by {@code tool} and {@code agent}</li>
  *   <li>{@code embabel.tool.calls.total} (counter) — tool calls, tagged by {@code tool} and {@code agent}</li>
  *   <li>{@code embabel.agent.stuck.total} (counter) — agent stuck events, tagged by {@code agent}</li>
  *   <li>{@code embabel.tool_loop.iterations} (summary) — tool loop iteration counts, tagged by {@code agent}</li>
@@ -186,6 +186,7 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
             Counter.builder("embabel.tool.errors.total")
                     .description("Total tool call failures")
                     .tag("tool", toolName)
+                    .tag("agent", event.getAgentProcess().getAgent().getName())
                     .register(registry)
                     .increment();
         }
@@ -231,6 +232,7 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         Timer.builder("embabel.llm.duration")
                 .description("LLM call duration")
                 .tag("model", event.getRequest().getLlmMetadata().getName())
+                .tag("agent", event.getAgentProcess().getAgent().getName())
                 .register(registry)
                 .record(event.getRunningTime());
     }
@@ -248,6 +250,7 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         Timer.builder("embabel.tool.duration")
                 .description("Tool call duration")
                 .tag("tool", event.getRequest().getTool())
+                .tag("agent", event.getAgentProcess().getAgent().getName())
                 .register(registry)
                 .record(event.getRunningTime());
     }

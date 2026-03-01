@@ -272,7 +272,7 @@ class EmbabelMetricsEventListenerTest {
                     process, "WebSearch", null, new RuntimeException("search failed"));
             listener.onProcessEvent(toolResponseEvent);
 
-            Counter counter = registry.find("embabel.tool.errors.total").tag("tool", "WebSearch").counter();
+            Counter counter = registry.find("embabel.tool.errors.total").tag("tool", "WebSearch").tag("agent", "ToolAgent").counter();
             assertThat(counter).isNotNull();
             assertThat(counter.count()).isEqualTo(1.0);
         }
@@ -394,7 +394,7 @@ class EmbabelMetricsEventListenerTest {
     class LlmDurationTimerTests {
 
         @Test
-        @DisplayName("LLM response should record duration with model tag")
+        @DisplayName("LLM response should record duration with model and agent tags")
         void llmResponse_shouldRecordDuration() {
             var registry = new SimpleMeterRegistry();
             var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
@@ -403,7 +403,7 @@ class EmbabelMetricsEventListenerTest {
             listener.onProcessEvent(createMockLlmResponseEvent(process, "gpt-4", Duration.ofMillis(250)));
 
             Timer timer = registry.find("embabel.llm.duration")
-                    .tag("model", "gpt-4").timer();
+                    .tag("model", "gpt-4").tag("agent", "LlmAgent").timer();
             assertThat(timer).isNotNull();
             assertThat(timer.count()).isEqualTo(1);
             assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(250.0);
@@ -419,7 +419,7 @@ class EmbabelMetricsEventListenerTest {
     class ToolDurationTimerTests {
 
         @Test
-        @DisplayName("Tool response should record duration with tool tag")
+        @DisplayName("Tool response should record duration with tool and agent tags")
         void toolResponse_shouldRecordDuration() {
             var registry = new SimpleMeterRegistry();
             var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
@@ -429,7 +429,7 @@ class EmbabelMetricsEventListenerTest {
             listener.onProcessEvent(toolResponseEvent);
 
             Timer timer = registry.find("embabel.tool.duration")
-                    .tag("tool", "WebSearch").timer();
+                    .tag("tool", "WebSearch").tag("agent", "ToolAgent").timer();
             assertThat(timer).isNotNull();
             assertThat(timer.count()).isEqualTo(1);
             assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(50.0);
