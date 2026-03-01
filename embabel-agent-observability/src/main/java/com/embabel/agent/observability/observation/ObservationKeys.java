@@ -37,5 +37,5 @@ final class ObservationKeys {
 
     // Span names (prefix + name, no runId)
     static String toolSpanName(String toolName) { return TOOL_PREFIX + toolName; }
-    static String toolLoopSpanName(String interactionId) { return TOOL_LOOP_PREFIX + interactionId; }
+    static String toolLoopSpanName(String interactionId) { return TOOL_LOOP_PREFIX; }
 }

@@ -20,11 +20,16 @@ import com.embabel.agent.core.AgentProcess;
 import com.embabel.agent.core.Usage;
 import com.embabel.agent.observability.ObservabilityProperties;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -38,6 +43,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code embabel.llm.cost.total} (counter) — estimated USD cost, tagged by {@code agent}</li>
  *   <li>{@code embabel.tool.errors.total} (counter) — tool failures, tagged by {@code tool}</li>
  *   <li>{@code embabel.planning.replanning.total} (counter) — replanifications, tagged by {@code agent}</li>
+ *   <li>{@code embabel.agent.duration} (timer) — agent process duration, tagged by {@code agent} and {@code status}</li>
+ *   <li>{@code embabel.llm.requests.total} (counter) — LLM requests, tagged by {@code agent} and {@code model}</li>
+ *   <li>{@code embabel.llm.duration} (timer) — LLM call duration, tagged by {@code model}</li>
+ *   <li>{@code embabel.tool.duration} (timer) — tool call duration, tagged by {@code tool}</li>
+ *   <li>{@code embabel.tool.calls.total} (counter) — tool calls, tagged by {@code tool} and {@code agent}</li>
+ *   <li>{@code embabel.agent.stuck.total} (counter) — agent stuck events, tagged by {@code agent}</li>
+ *   <li>{@code embabel.tool_loop.iterations} (summary) — tool loop iteration counts, tagged by {@code agent}</li>
  * </ul>
  *
  * @since 0.3.4
@@ -49,6 +61,7 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
     private final MeterRegistry registry;
     private final ObservabilityProperties properties;
     private final AtomicInteger activeAgents = new AtomicInteger(0);
+    private final ConcurrentHashMap<String, Instant> creationTimestamps = new ConcurrentHashMap<>();
 
     /**
      * Creates a new metrics event listener and registers the {@code embabel.agent.active} gauge.
@@ -80,18 +93,34 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
         }
 
         switch (event) {
-            case AgentProcessCreationEvent e -> activeAgents.incrementAndGet();
+            case AgentProcessCreationEvent e -> {
+                activeAgents.incrementAndGet();
+                creationTimestamps.put(e.getAgentProcess().getId(), Instant.now());
+            }
             case AgentProcessCompletedEvent e -> {
                 activeAgents.decrementAndGet();
                 recordTokensAndCost(e.getAgentProcess());
+                recordAgentDuration(e.getAgentProcess(), "completed");
             }
             case AgentProcessFailedEvent e -> {
                 activeAgents.decrementAndGet();
                 recordAgentError(e.getAgentProcess());
                 recordTokensAndCost(e.getAgentProcess());
+                recordAgentDuration(e.getAgentProcess(), "failed");
             }
-            case ProcessKilledEvent e -> activeAgents.decrementAndGet();
-            case ToolCallResponseEvent e -> recordToolError(e);
+            case ProcessKilledEvent e -> {
+                activeAgents.decrementAndGet();
+                creationTimestamps.remove(e.getAgentProcess().getId());
+            }
+            case ToolCallRequestEvent e -> recordToolCall(e);
+            case ToolCallResponseEvent e -> {
+                recordToolError(e);
+                recordToolDuration(e);
+            }
+            case LlmRequestEvent e -> recordLlmRequest(e);
+            case LlmResponseEvent e -> recordLlmDuration(e);
+            case AgentProcessStuckEvent e -> recordAgentStuck(e);
+            case ToolLoopCompletedEvent e -> recordToolLoopIterations(e);
             case ReplanRequestedEvent e -> recordReplanning(e.getAgentProcess());
             default -> { }
         }
@@ -172,6 +201,71 @@ public class EmbabelMetricsEventListener implements AgenticEventListener {
                 .tag("agent", agentName)
                 .register(registry)
                 .increment();
+    }
+
+    private void recordAgentDuration(AgentProcess process, String status) {
+        var createdAt = creationTimestamps.remove(process.getId());
+        if (createdAt != null) {
+            var duration = Duration.between(createdAt, Instant.now());
+            Timer.builder("embabel.agent.duration")
+                    .description("Agent process duration")
+                    .tag("agent", process.getAgent().getName())
+                    .tag("status", status)
+                    .register(registry)
+                    .record(duration);
+        }
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void recordLlmRequest(LlmRequestEvent event) {
+        Counter.builder("embabel.llm.requests.total")
+                .description("Total LLM requests")
+                .tag("agent", event.getAgentProcess().getAgent().getName())
+                .tag("model", event.getLlmMetadata().getName())
+                .register(registry)
+                .increment();
+    }
+
+    @SuppressWarnings("rawtypes")
+    private void recordLlmDuration(LlmResponseEvent event) {
+        Timer.builder("embabel.llm.duration")
+                .description("LLM call duration")
+                .tag("model", event.getRequest().getLlmMetadata().getName())
+                .register(registry)
+                .record(event.getRunningTime());
+    }
+
+    private void recordToolCall(ToolCallRequestEvent event) {
+        Counter.builder("embabel.tool.calls.total")
+                .description("Total tool calls")
+                .tag("tool", event.getTool())
+                .tag("agent", event.getAgentProcess().getAgent().getName())
+                .register(registry)
+                .increment();
+    }
+
+    private void recordToolDuration(ToolCallResponseEvent event) {
+        Timer.builder("embabel.tool.duration")
+                .description("Tool call duration")
+                .tag("tool", event.getRequest().getTool())
+                .register(registry)
+                .record(event.getRunningTime());
+    }
+
+    private void recordAgentStuck(AgentProcessStuckEvent event) {
+        Counter.builder("embabel.agent.stuck.total")
+                .description("Total agent stuck events")
+                .tag("agent", event.getAgentProcess().getAgent().getName())
+                .register(registry)
+                .increment();
+    }
+
+    private void recordToolLoopIterations(ToolLoopCompletedEvent event) {
+        DistributionSummary.builder("embabel.tool_loop.iterations")
+                .description("Tool loop iteration counts")
+                .tag("agent", event.getAgentProcess().getAgent().getName())
+                .register(registry)
+                .record(event.getTotalIterations());
     }
 
     /**

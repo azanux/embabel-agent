@@ -19,8 +19,11 @@ import com.embabel.agent.api.common.PlannerType;
 import com.embabel.agent.api.event.*;
 import com.embabel.agent.core.*;
 import com.embabel.agent.observability.ObservabilityProperties;
+import com.embabel.common.ai.model.LlmMetadata;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +32,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -315,6 +319,197 @@ class EmbabelMetricsEventListenerTest {
     }
 
     // ================================================================================
+    // AGENT DURATION TIMER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Agent Duration Timer Tests")
+    class AgentDurationTimerTests {
+
+        @Test
+        @DisplayName("Completed agent should record duration with status=completed")
+        void completed_shouldRecordDuration() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "DurationAgent");
+            mockUsageAndCost(process, null, 0.0);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessCompletedEvent(process));
+
+            Timer timer = registry.find("embabel.agent.duration")
+                    .tag("agent", "DurationAgent").tag("status", "completed").timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.count()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("Failed agent should record duration with status=failed")
+        void failed_shouldRecordDuration() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "DurationAgent");
+            mockUsageAndCost(process, null, 0.0);
+
+            listener.onProcessEvent(new AgentProcessCreationEvent(process));
+            listener.onProcessEvent(new AgentProcessFailedEvent(process));
+
+            Timer timer = registry.find("embabel.agent.duration")
+                    .tag("agent", "DurationAgent").tag("status", "failed").timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.count()).isEqualTo(1);
+        }
+    }
+
+    // ================================================================================
+    // LLM REQUEST COUNTER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("LLM Request Counter Tests")
+    class LlmRequestCounterTests {
+
+        @Test
+        @DisplayName("LLM request should increment counter with agent and model tags")
+        void llmRequest_shouldIncrementCounter() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "LlmAgent");
+
+            listener.onProcessEvent(createMockLlmRequestEvent(process, "gpt-4"));
+
+            Counter counter = registry.find("embabel.llm.requests.total")
+                    .tag("agent", "LlmAgent").tag("model", "gpt-4").counter();
+            assertThat(counter).isNotNull();
+            assertThat(counter.count()).isEqualTo(1.0);
+        }
+    }
+
+    // ================================================================================
+    // LLM DURATION TIMER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("LLM Duration Timer Tests")
+    class LlmDurationTimerTests {
+
+        @Test
+        @DisplayName("LLM response should record duration with model tag")
+        void llmResponse_shouldRecordDuration() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "LlmAgent");
+
+            listener.onProcessEvent(createMockLlmResponseEvent(process, "gpt-4", Duration.ofMillis(250)));
+
+            Timer timer = registry.find("embabel.llm.duration")
+                    .tag("model", "gpt-4").timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.count()).isEqualTo(1);
+            assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(250.0);
+        }
+    }
+
+    // ================================================================================
+    // TOOL DURATION TIMER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Tool Duration Timer Tests")
+    class ToolDurationTimerTests {
+
+        @Test
+        @DisplayName("Tool response should record duration with tool tag")
+        void toolResponse_shouldRecordDuration() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "ToolAgent");
+
+            var toolResponseEvent = createToolCallResponseEvent(process, "WebSearch", "result", null);
+            listener.onProcessEvent(toolResponseEvent);
+
+            Timer timer = registry.find("embabel.tool.duration")
+                    .tag("tool", "WebSearch").timer();
+            assertThat(timer).isNotNull();
+            assertThat(timer.count()).isEqualTo(1);
+            assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(50.0);
+        }
+    }
+
+    // ================================================================================
+    // TOOL CALL COUNTER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Tool Call Counter Tests")
+    class ToolCallCounterTests {
+
+        @Test
+        @DisplayName("Tool call request should increment counter with tool and agent tags")
+        void toolCallRequest_shouldIncrementCounter() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "ToolAgent");
+
+            listener.onProcessEvent(createMockToolCallRequestEvent(process, "WebSearch"));
+
+            Counter counter = registry.find("embabel.tool.calls.total")
+                    .tag("tool", "WebSearch").tag("agent", "ToolAgent").counter();
+            assertThat(counter).isNotNull();
+            assertThat(counter.count()).isEqualTo(1.0);
+        }
+    }
+
+    // ================================================================================
+    // AGENT STUCK COUNTER TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Agent Stuck Counter Tests")
+    class AgentStuckCounterTests {
+
+        @Test
+        @DisplayName("Agent stuck should increment counter with agent tag")
+        void agentStuck_shouldIncrementCounter() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "StuckAgent");
+
+            listener.onProcessEvent(new AgentProcessStuckEvent(process));
+
+            Counter counter = registry.find("embabel.agent.stuck.total")
+                    .tag("agent", "StuckAgent").counter();
+            assertThat(counter).isNotNull();
+            assertThat(counter.count()).isEqualTo(1.0);
+        }
+    }
+
+    // ================================================================================
+    // TOOL LOOP ITERATIONS TESTS
+    // ================================================================================
+
+    @Nested
+    @DisplayName("Tool Loop Iterations Tests")
+    class ToolLoopIterationsTests {
+
+        @Test
+        @DisplayName("Tool loop completed should record iteration count with agent tag")
+        void toolLoopCompleted_shouldRecordIterations() {
+            var registry = new SimpleMeterRegistry();
+            var listener = new EmbabelMetricsEventListener(registry, new ObservabilityProperties());
+            var process = createMockAgentProcess("run-1", "LoopAgent");
+
+            listener.onProcessEvent(createMockToolLoopCompletedEvent(process, 5));
+
+            DistributionSummary summary = registry.find("embabel.tool_loop.iterations")
+                    .tag("agent", "LoopAgent").summary();
+            assertThat(summary).isNotNull();
+            assertThat(summary.count()).isEqualTo(1);
+            assertThat(summary.totalAmount()).isEqualTo(5.0);
+        }
+    }
+
+    // ================================================================================
     // METRICS DISABLED TESTS
     // ================================================================================
 
@@ -342,6 +537,13 @@ class EmbabelMetricsEventListenerTest {
             assertThat(registry.find("embabel.llm.tokens.total").counter()).isNull();
             assertThat(registry.find("embabel.llm.cost.total").counter()).isNull();
             assertThat(registry.find("embabel.planning.replanning.total").counter()).isNull();
+            assertThat(registry.find("embabel.agent.duration").timer()).isNull();
+            assertThat(registry.find("embabel.llm.requests.total").counter()).isNull();
+            assertThat(registry.find("embabel.llm.duration").timer()).isNull();
+            assertThat(registry.find("embabel.tool.calls.total").counter()).isNull();
+            assertThat(registry.find("embabel.tool.duration").timer()).isNull();
+            assertThat(registry.find("embabel.agent.stuck.total").counter()).isNull();
+            assertThat(registry.find("embabel.tool_loop.iterations").summary()).isNull();
         }
     }
 
@@ -378,6 +580,40 @@ class EmbabelMetricsEventListenerTest {
     private static void mockUsageAndCost(AgentProcess process, Usage usage, double cost) {
         lenient().when(process.usage()).thenReturn(usage != null ? usage : new Usage(null, null, null));
         lenient().when(process.cost()).thenReturn(cost);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static LlmRequestEvent<?> createMockLlmRequestEvent(AgentProcess process, String modelName) {
+        var event = mock(LlmRequestEvent.class);
+        var metadata = mock(LlmMetadata.class);
+        lenient().when(metadata.getName()).thenReturn(modelName);
+        lenient().when(event.getAgentProcess()).thenReturn(process);
+        lenient().when(event.getLlmMetadata()).thenReturn(metadata);
+        return event;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static LlmResponseEvent<?> createMockLlmResponseEvent(AgentProcess process, String modelName, Duration runningTime) {
+        var event = mock(LlmResponseEvent.class);
+        var request = createMockLlmRequestEvent(process, modelName);
+        lenient().when(event.getRequest()).thenReturn(request);
+        lenient().when(event.getRunningTime()).thenReturn(runningTime);
+        lenient().when(event.getAgentProcess()).thenReturn(process);
+        return event;
+    }
+
+    private static ToolCallRequestEvent createMockToolCallRequestEvent(AgentProcess process, String toolName) {
+        var event = mock(ToolCallRequestEvent.class);
+        lenient().when(event.getTool()).thenReturn(toolName);
+        lenient().when(event.getAgentProcess()).thenReturn(process);
+        return event;
+    }
+
+    private static ToolLoopCompletedEvent createMockToolLoopCompletedEvent(AgentProcess process, int totalIterations) {
+        var event = mock(ToolLoopCompletedEvent.class);
+        lenient().when(event.getTotalIterations()).thenReturn(totalIterations);
+        lenient().when(event.getAgentProcess()).thenReturn(process);
+        return event;
     }
 
     private static ToolCallResponseEvent createToolCallResponseEvent(AgentProcess process, String toolName,
