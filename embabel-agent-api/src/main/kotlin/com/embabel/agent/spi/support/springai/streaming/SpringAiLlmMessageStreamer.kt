@@ -22,7 +22,7 @@ import com.embabel.agent.spi.loop.streaming.LlmInferenceStreamEvent
 import com.embabel.agent.spi.support.springai.SpringAiLlmMessageSender
 import com.embabel.agent.spi.support.springai.toSpringAiMessage
 import com.embabel.agent.spi.support.springai.toEmbabelMessage
-import com.embabel.agent.spi.support.springai.toEmbabelUsage
+import com.embabel.agent.spi.support.springai.SpringAiUsageConverter
 import com.embabel.agent.spi.support.springai.toSpringToolCallbacks
 import com.embabel.agent.spi.support.springai.ToolResponseContentAdapter
 import com.embabel.chat.Message
@@ -51,6 +51,7 @@ internal class SpringAiLlmMessageStreamer(
     private val chatModel: ChatModel,
     private val chatOptions: ChatOptions,
     private val toolResponseContentAdapter: ToolResponseContentAdapter = ToolResponseContentAdapter.PASSTHROUGH,
+    private val usageConverter: SpringAiUsageConverter = SpringAiUsageConverter.DEFAULT,
 ) : LlmMessageStreamer {
 
     override fun stream(
@@ -99,7 +100,7 @@ internal class SpringAiLlmMessageStreamer(
                         ?: throw IllegalStateException("Streaming response contained no assistant output")
                     LlmInferenceStreamEvent.Complete(
                         message = output.toEmbabelMessage(),
-                        usage = response.metadata?.usage?.toEmbabelUsage(),
+                        usage = response.metadata?.usage?.let(usageConverter::convert),
                     )
                 }
 

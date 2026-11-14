@@ -209,6 +209,7 @@ abstract class AbstractAgentProcess(
             (own.promptTokens ?: 0) + children.sumOf { it.usage().promptTokens ?: 0 },
             (own.completionTokens ?: 0) + children.sumOf { it.usage().completionTokens ?: 0 },
             null,
+            ((own.thinkingTokens ?: 0) + children.sumOf { it.usage().thinkingTokens ?: 0 }).takeIf { it > 0 },
         )
     }
 

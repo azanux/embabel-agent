@@ -58,7 +58,8 @@ interface LlmInvocationHistory {
     fun usage(): Usage {
         val promptTokens = llmInvocations.sumOf { it.usage.promptTokens ?: 0 }
         val completionTokens = llmInvocations.sumOf { it.usage.completionTokens ?: 0 }
-        return Usage(promptTokens, completionTokens, null)
+        val thinkingTokens = llmInvocations.sumOf { it.usage.thinkingTokens ?: 0 }
+        return Usage(promptTokens, completionTokens, null, thinkingTokens.takeIf { it > 0 })
     }
 
     /** Total LLM call count. Default = own; overridable for subtree aggregation. */

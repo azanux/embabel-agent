@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.ai.chat.messages.AssistantMessage as SpringAiAssistantMessage
 import org.springframework.ai.chat.metadata.ChatResponseMetadata
+import org.springframework.ai.chat.metadata.DefaultUsage
 import org.springframework.ai.chat.model.ChatModel
 import org.springframework.ai.chat.model.ChatResponse
 import org.springframework.ai.chat.model.Generation
@@ -774,6 +775,33 @@ class SpringAiLlmMessageSenderTest {
             )
 
             assertThat(response.thinkingBlocks).isEmpty()
+        }
+    }
+
+    @Nested
+    inner class UsageConverterTests {
+
+        @Test
+        fun `the usage is converted by the converter the service wires`() {
+            val generation = Generation(SpringAiAssistantMessage("answer"))
+            val chatResponse = mockk<ChatResponse> {
+                every { result } returns generation
+                every { results } returns listOf(generation)
+                every { metadata } returns mockk<ChatResponseMetadata> { every { usage } returns DefaultUsage(60, 1) }
+            }
+            val chatModel = mockk<ChatModel> { every { call(any<Prompt>()) } returns chatResponse }
+            val sender = SpringAiLlmMessageSender(
+                chatModel = chatModel,
+                chatOptions = testChatOptions(),
+                usageConverter = SpringAiUsageConverter { com.embabel.agent.core.Usage(it.promptTokens, it.completionTokens!! + 95, null, 95) },
+            )
+
+            val response = sender.call(
+                LlmMessageRequest(messages = listOf(com.embabel.chat.UserMessage("hi")), tools = emptyList()),
+            )
+
+            assertThat(response.usage?.completionTokens).isEqualTo(96)
+            assertThat(response.usage?.thinkingTokens).isEqualTo(95)
         }
     }
 

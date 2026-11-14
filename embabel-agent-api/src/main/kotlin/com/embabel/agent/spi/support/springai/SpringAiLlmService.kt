@@ -60,6 +60,8 @@ import java.time.LocalDate
  *        request metadata. Defaults to no-op so unsupported providers keep prompt-schema fallback.
  * @param nativeThinkingExtractor Extracts native thinking blocks from the raw ChatResponse.
  *        Defaults to no-op; Anthropic wires [com.embabel.agent.anthropic.AnthropicNativeThinkingExtractor].
+ * @param usageConverter Turns the provider's usage into embabel's. Defaults to [SpringAiUsageConverter.DEFAULT];
+ *        Google GenAI wires one that counts the thinking it reports apart in the completion.
  */
 @JsonSerialize(`as` = LlmMetadata::class)
 data class SpringAiLlmService @JvmOverloads constructor(
@@ -79,6 +81,7 @@ data class SpringAiLlmService @JvmOverloads constructor(
     val nativeThinkingExtractor: SpringAiNativeThinkingExtractor =
         SpringAiNativeThinkingExtractor.NOOP,
     val nativeSupport: NativeSupport? = null,
+    val usageConverter: SpringAiUsageConverter = SpringAiUsageConverter.DEFAULT,
 ) : LlmService<SpringAiLlmService>, AiModel<ChatModel> {
 
     /**
@@ -99,6 +102,7 @@ data class SpringAiLlmService @JvmOverloads constructor(
             nativeThinkingExtractor = nativeThinkingExtractor,
             nativeSupport = nativeSupport,
             llmMetadata = this,
+            usageConverter = usageConverter,
         )
     }
 
@@ -107,6 +111,7 @@ data class SpringAiLlmService @JvmOverloads constructor(
             chatModel = chatModel,
             chatOptions = convertOptions(options),
             toolResponseContentAdapter = toolResponseContentAdapter,
+            usageConverter = usageConverter,
         )
     }
 

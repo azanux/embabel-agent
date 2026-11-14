@@ -195,7 +195,8 @@ interface AgentProcess : Blackboard, Timestamped, Timed, OperationStatus<AgentPr
     fun ownUsage(): Usage {
         val promptTokens = llmInvocations.sumOf { it.usage.promptTokens ?: 0 }
         val completionTokens = llmInvocations.sumOf { it.usage.completionTokens ?: 0 }
-        return Usage(promptTokens, completionTokens, null)
+        val thinkingTokens = llmInvocations.sumOf { it.usage.thinkingTokens ?: 0 }
+        return Usage(promptTokens, completionTokens, null, thinkingTokens.takeIf { it > 0 })
     }
 
     /**

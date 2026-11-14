@@ -17,11 +17,15 @@ package com.embabel.agent.core
 
 /**
  * LLM usage data
+ *
+ * @param thinkingTokens the part of [completionTokens] the model spent reasoning, when the provider reports it;
+ * a detail, already counted and billed in the completion
  */
-data class Usage(
+data class Usage @JvmOverloads constructor(
     val promptTokens: Int?,
     val completionTokens: Int?,
     val nativeUsage: Any?,
+    val thinkingTokens: Int? = null,
 ) {
 
     val totalTokens: Int?
@@ -44,5 +48,9 @@ data class Usage(
             else -> (this.completionTokens ?: 0) + (other.completionTokens ?: 0)
         },
         nativeUsage = null, // Cannot combine native usage objects
+        thinkingTokens = when {
+            this.thinkingTokens == null && other.thinkingTokens == null -> null
+            else -> (this.thinkingTokens ?: 0) + (other.thinkingTokens ?: 0)
+        },
     )
 }

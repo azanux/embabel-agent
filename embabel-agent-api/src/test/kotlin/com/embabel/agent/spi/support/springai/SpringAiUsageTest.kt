@@ -16,6 +16,7 @@
 package com.embabel.agent.spi.support.springai
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
 import org.springframework.ai.chat.metadata.DefaultUsage
 
@@ -38,5 +39,11 @@ class SpringAiUsageTest {
         val embabelUsage = springUsage.toEmbabelUsage()
 
         assertEquals(300, embabelUsage.totalTokens)
+    }
+
+    @Test
+    fun `the default conversion reports no thinking, whatever the total holds`() {
+        assertNull(DefaultUsage(100, 50, 400).toEmbabelUsage().thinkingTokens)
+        assertEquals(50, DefaultUsage(100, 50, 400).toEmbabelUsage().completionTokens)
     }
 }
